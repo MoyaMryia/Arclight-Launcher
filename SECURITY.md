@@ -20,7 +20,7 @@ These are enforced by review, and a violation is a security bug:
 2. **No telemetry, no update check, no analytics.** The binary contacts only
    the Microsoft/Xbox/Mojang authentication endpoints described in
    `README.md`.
-3. **No game content is fetched.** This is a launcher, not a downloader.
+3. **No game content is fetched besides from mojang's official server.**
 
 If you find code that breaks one of these, treat it as a vulnerability.
 
