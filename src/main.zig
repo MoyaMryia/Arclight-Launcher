@@ -8,6 +8,7 @@ const Io = std.Io;
 
 const store = @import("store.zig");
 const java = @import("java.zig");
+const meta = @import("meta.zig");
 
 /// Exit codes are part of the interface: scripts branch on them.
 pub const Exit = struct {
@@ -58,6 +59,8 @@ const usage_text =
     \\
     \\COMMANDS:
     \\    login              Sign in with a Microsoft account (device code flow)
+    \\    versions           List Minecraft versions from Mojang's manifest
+    \\    install <version>  Fetch a version, its libraries and assets
     \\    status             Show the stored account (never prints tokens)
     \\    logout             Forget the stored account
     \\    java               List detected Java runtimes
@@ -122,8 +125,16 @@ fn dispatch(c: Ctx, cmd: []const u8, args: []const []const u8) u8 {
     if (eq(cmd, "version")) return cmdVersion(c);
     if (eq(cmd, "status")) return cmdStatus(c);
     if (eq(cmd, "java")) return cmdJava(c);
+    if (eq(cmd, "versions")) return cmdVersions(c);
     if (eq(cmd, "logout")) return cmdLogout(c);
     if (eq(cmd, "login")) return notImplemented(c, "login", "auth.zig: device code flow");
+    if (eq(cmd, "install")) {
+        if (args.len != 1) {
+            c.err("error: install needs exactly one version id\n", .{});
+            return Exit.usage;
+        }
+        return notImplemented(c, "install", "install.zig: client jar + libraries + assets");
+    }
     if (eq(cmd, "launch")) {
         if (args.len != 1) {
             c.err("error: launch needs exactly one version id\n", .{});
@@ -264,4 +275,39 @@ fn notImplemented(c: Ctx, what: []const u8, detail: []const u8) u8 {
     c.err("error: '{s}' is not implemented yet ({s})\n", .{ what, detail });
     if (c.json) c.emitJson(.{ .err = "not_implemented", .cmd = what });
     return Exit.unimplemented;
+}
+
+fn cmdVersions(c: Ctx) u8 {
+    const dir = store.configDir(c.arena, c.environ) catch {
+        c.err("error: cannot resolve config directory (HOME unset?)\n", .{});
+        return Exit.config;
+    };
+    const cache_dir = std.fs.path.join(c.arena, &.{ dir, "cache" }) catch return Exit.config;
+
+    const manifest = meta.loadManifest(c.io, c.gpa, c.arena, cache_dir) catch |e| {
+        c.err("error: cannot load version manifest: {s}\n", .{@errorName(e)});
+        return Exit.download;
+    };
+
+    const limit: usize = 10;
+    const shown = @min(manifest.versions.len, limit);
+
+    if (c.json) {
+        c.emitJson(.{
+            .latest = manifest.latest,
+            .total = manifest.versions.len,
+            .versions = manifest.versions[0..shown],
+        });
+    } else {
+        var buf: [256]u8 = undefined;
+        c.out(std.fmt.bufPrint(&buf, "latest release: {s}\nlatest snapshot: {s}\n\n", .{
+            manifest.latest.release, manifest.latest.snapshot,
+        }) catch "");
+        for (manifest.versions[0..shown]) |v| {
+            c.out(std.fmt.bufPrint(&buf, "{s:<12} {s}\n", .{ v.id, v.type }) catch "");
+        }
+        var buf2: [128]u8 = undefined;
+        c.out(std.fmt.bufPrint(&buf2, "\n({d} versions total)\n", .{manifest.versions.len}) catch "");
+    }
+    return Exit.ok;
 }
