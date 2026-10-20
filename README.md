@@ -4,7 +4,8 @@ A minimal Minecraft: **Java Edition** launcher for the command line.
 
 ```
 arclight login              # Microsoft account, device code flow
-arclight launch 1.20.1      # start a version you already installed
+arclight install 1.20.1     # fetch that version from Mojang's own servers
+arclight launch 1.20.1      # start it
 arclight java               # list detected runtimes
 arclight status --json      # scriptable
 ```
@@ -43,13 +44,27 @@ and exit code `11`. That is expected behaviour, not a bug.
 No cracked accounts, no `authlib-injector`, no "offline login". The account
 must own Minecraft: Java Edition.
 
-**4. This tool does not download, mirror, or host game files.**
+**4. It does not host, mirror, or redistribute game content.**
 
-It starts a version that already exists in your `.minecraft` directory, which
-you installed with the official launcher. It downloads nothing: no client jar,
-no libraries, no assets, no mods, no modpacks, no server software. It contacts
-exactly two hosts — `login.microsoftonline.com` / Xbox / Mojang service
-endpoints for authentication, and nothing else.
+Versions, libraries and assets are fetched on demand from Mojang's own
+endpoints — the same sources the official launcher uses:
+
+```
+piston-meta.mojang.com        version manifest, version json, java runtime index
+piston-data.mojang.com        client.jar
+libraries.minecraft.net       libraries
+resources.download.minecraft.net   assets
+```
+
+There is **no bundled client jar, no third-party mirror, and no
+download-source setting**. The only host list in the code is the one above, and
+every downloaded file is verified against the SHA-1 published in Mojang's own
+metadata before it is used.
+
+Fetching from the official source on the user's behalf is what every launcher
+in Mojang's AppID allowlist does (MultiMC, Prism, ATLauncher, Modrinth App).
+What none of them may do — and this project never does — is serve copies of
+game content from its own infrastructure.
 
 **5. Linux only. Unsupported elsewhere.**
 
@@ -77,7 +92,8 @@ The upstream author:
 
 - does not distribute binaries,
 - does not operate any download server, mirror, or relay,
-- does not provide game downloads to any third party.
+- does not offer a download-source setting: the binary talks to Mojang's
+  official endpoints and to nothing else.
 
 If you build and distribute this tool in a jurisdiction where providing
 game-download functionality requires authorization, **you** are responsible

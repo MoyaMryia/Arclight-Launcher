@@ -14,8 +14,10 @@ requests asking for them are closed without reply:
 
 - a GUI, a TUI wizard, or any interactive prompt
 - a Windows or macOS build, or platform-specific workarounds
-- download/install of game files, libraries, assets, or Java runtimes
+- any download source other than Mojang's own endpoints, or a mirror setting
+- automatic download of a Java runtime (a JDK is the user's business)
 - mods, modpacks, mod loaders, or installer automation
+- hosting, mirroring, or redistributing game content
 - offline mode, cracked accounts, `authlib-injector`, or any auth bypass
 - a bundled or default Client ID
 - translations
