@@ -56,7 +56,7 @@ the hash matches.
 ## Platform support
 
 Mainly Linux: that is what it is developed and tested on. Windows and macOS
-are not covered — there is one maintainer and neither has been tested, so
+are not covered — there is only one maintainer and neither has been tested, so
 nothing is promised there. Patches that add or fix support are welcome if you
 can test them.
 

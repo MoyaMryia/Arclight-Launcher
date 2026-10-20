@@ -12,9 +12,9 @@ about capacity rather than taste.
 - Platform support, if you can test it — see "Platform" below.
 - Translations of the documentation.
 
-## Out of scope for now
+## Out of scope
 
-Not wrong, just more than one person can keep working:
+Might not wrong, just more than one person can keep working:
 
 - a GUI, or a wizard that walks you through setup
 - package manager recipes, prebuilt binaries, release artifacts
