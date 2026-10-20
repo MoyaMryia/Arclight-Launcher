@@ -27,20 +27,20 @@ If you find code that breaks one of these, treat it as a vulnerability.
 ## Reporting
 
 Open a GitHub issue titled `[security] <one line summary>` **without**
-reproduction details, and state that you are reporting a vulnerability. You
-will be asked for details through a private channel.
+reproduction details, and say that you are reporting a vulnerability. Details
+can follow through a private channel.
 
-Do not publish a reproducer before a fix ships.
+Please don't publish a reproducer before a fix ships.
 
 If a token may have leaked, revoke it first: signing out of the account in
 `arclight logout`, then changing the Microsoft account password, invalidates the
 refresh token.
 
-## Out of scope
+## Not security issues
 
-- Anything requiring a bundled Client ID (there is none, and there is no
-  allowlisted ID you can use).
-- "My antivirus flags the binary." You built it yourself; there is no binary
-  distributed by the author.
+- Anything requiring a bundled Client ID. There isn't one, and there is no
+  allowlisted ID you can borrow.
+- "My antivirus flags the binary." You built it yourself; no binaries are
+  distributed here.
 - Findings that require an attacker who already has read access to your user
   account.

@@ -1,111 +1,81 @@
 # Arclight Launcher
 
-A minimal Minecraft: **Java Edition** launcher for the command line.
+A small launcher for **Minecraft: Java Edition**, for the command line, written
+in Zig.
 
 ```
-arclight login              # Microsoft account, device code flow
+arclight login              # sign in with your Microsoft account
 arclight install 1.20.1     # fetch that version from Mojang's own servers
 arclight launch 1.20.1      # start it
-arclight java               # list detected runtimes
+arclight java               # show detected Java runtimes
 arclight status --json      # scriptable
 ```
 
----
+## Status
 
-## Hard constraints
+Work in progress. `versions`, `java`, `status` and `logout` work today;
+`login`, `install` and `launch` are being written.
 
-Read these before opening an issue. They are not negotiable.
+## Requirements
 
-**1. Requires Zig 0.17.0 exactly.**
+**Zig 0.17.0.** This is built and tested against that release. Zig is pre-1.0
+and changes its standard library between releases, so other versions are not
+expected to compile; the version is pinned in `build.zig.zon` on purpose.
 
-Zig is pre-1.0 and its standard library breaks between releases. This project
-is pinned to `0.17.0` and is not expected to build on `0.16` or `0.18`.
-There are no binaries, no releases, and no CI artifacts.
+**Your own Microsoft Entra application (Client ID).** None is bundled. You
+register one (personal Microsoft accounts, public client flows enabled) and
+request access for it at <https://aka.ms/mce-reviewappid>. Until it is
+approved, signing in fails with `HTTP 403 Invalid app registration` and exit
+code `11` — that is the API's answer, not a defect in this program.
 
-```
-zig build -Doptimize=ReleaseSafe
-./zig-out/bin/arclight help
-```
+**A Microsoft account that owns Minecraft: Java Edition.** There is no offline
+mode, no cracked account support, and no way to point the launcher at a
+different authentication service.
 
-**2. Requires your own Microsoft Entra application (Client ID).**
+**A Java runtime.** `arclight java` shows what it finds. A missing runtime is
+reported as an error; the launcher does not download one.
 
-No Client ID is bundled, and none will be provided. You must:
+## What it downloads, and from where
 
-- register an application in Microsoft Entra ID (personal Microsoft accounts,
-  public client flows enabled),
-- request access for it at <https://aka.ms/mce-reviewappid>,
-- wait for approval (weeks, not minutes).
+Game content comes from Mojang's own endpoints, the same ones the official
+launcher uses:
 
-Without approval, `arclight login` fails with `HTTP 403 Invalid app registration`
-and exit code `11`. That is expected behaviour, not a bug.
+| host | content |
+|---|---|
+| `piston-meta.mojang.com` | version manifest, version json, java runtime index |
+| `piston-data.mojang.com` | client jar |
+| `libraries.minecraft.net` | libraries |
+| `resources.download.minecraft.net` | assets |
 
-**3. Microsoft account required. There is no offline mode.**
+There is no bundled client jar, no third-party mirror, and no download-source
+setting to configure. Every file is verified against the SHA-1 published in
+Mojang's metadata before it is used, and nothing is written into place until
+the hash matches.
 
-No cracked accounts, no `authlib-injector`, no "offline login". The account
-must own Minecraft: Java Edition.
+## Platform support
 
-**4. It does not host, mirror, or redistribute game content.**
+Mainly Linux: that is what it is developed and tested on. Windows and macOS
+are not covered — there is one maintainer and neither has been tested, so
+nothing is promised there. Patches that add or fix support are welcome if you
+can test them.
 
-Versions, libraries and assets are fetched on demand from Mojang's own
-endpoints — the same sources the official launcher uses:
+## Regional notes
 
-```
-piston-meta.mojang.com        version manifest, version json, java runtime index
-piston-data.mojang.com        client.jar
-libraries.minecraft.net       libraries
-resources.download.minecraft.net   assets
-```
+No region detection is performed; the build default is `-Dregion-gate=none`.
+Downloads go to Mojang's official CDN and nowhere else, and there is no mirror
+or "download source" option to switch to something local. If you redistribute
+this program, compliance in your jurisdiction is yours to handle.
 
-There is **no bundled client jar, no third-party mirror, and no
-download-source setting**. The only host list in the code is the one above, and
-every downloaded file is verified against the SHA-1 published in Mojang's own
-metadata before it is used.
+## Support
 
-Fetching from the official source on the user's behalf is what every launcher
-in Mojang's AppID allowlist does (MultiMC, Prism, ATLauncher, Modrinth App).
-What none of them may do — and this project never does — is serve copies of
-game content from its own infrastructure.
-
-**5. Linux only. Unsupported elsewhere.**
-
-Windows and macOS are not tested and not supported. The code deliberately does
-not contain platform-specific workarounds.
-
-**6. No support, no SLA, no roadmap.**
-
-This project may be abandoned at any time without notice. There is no
-community chat, no Discord, no QQ group, and there will not be one. Issues are
-for reproducible bugs, not for feature requests or usage help.
-
-**7. English only.**
-
-No translation will be accepted. This is a deliberate constraint.
-
----
-
-## Regional compliance
-
-The build defaults to `-Dregion-gate=none`: **no region detection is
-performed.**
-
-The upstream author:
-
-- does not distribute binaries,
-- does not operate any download server, mirror, or relay,
-- does not offer a download-source setting: the binary talks to Mojang's
-  official endpoints and to nothing else.
-
-If you build and distribute this tool in a jurisdiction where providing
-game-download functionality requires authorization, **you** are responsible
-for your own compliance. A `-Dregion-gate=tz` level exists for development
-convenience only and is explicitly **not** a compliance measure — do not use
-it as one.
-
----
+Best effort, by one person. There is no support agreement, no SLA and no
+release schedule. Issues on GitHub are the only channel — there is no chat
+server. If something sits unanswered for a while, that is capacity, not
+judgement.
 
 ## Exit codes
 
-Scripts branch on these.
+Scripts can branch on these.
 
 | code | meaning |
 |-----:|---------|
@@ -119,16 +89,27 @@ Scripts branch on these.
 | 30 | no Java runtime found |
 | 70 | not implemented yet |
 
-`stdout` carries results, `stderr` carries progress and errors, so
-`arclight status --json | jq` is safe.
+`stdout` carries results and `stderr` carries progress, errors and hints, so
+`arclight status --json | jq` is safe. Token values never appear in either.
 
----
+## Building
+
+```
+zig build -Doptimize=ReleaseSafe
+./zig-out/bin/arclight help
+```
+
+Source only: no binaries are published, and the repository ships no release
+artifacts.
+
+## Documentation
+
+English for now. Translations are welcome as pull requests.
 
 ## Security
 
-Tokens are stored at `${XDG_CONFIG_HOME:-~/.config}/arclight/account.json` with
-mode `0600`. Token values never appear in logs or in `--json` output. See
-`SECURITY.md`.
+Tokens are stored at `${XDG_CONFIG_HOME:-~/.config}/arclight/account.json`
+with mode `0600`, and are never logged. See `SECURITY.md`.
 
 ## License
 

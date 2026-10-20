@@ -1,46 +1,53 @@
 # Contributing
 
-## What is accepted
+Thanks for taking a look. This is a small project with one maintainer, so the
+honest framing is: some things fit, some things don't, and the second list is
+about capacity rather than taste.
 
-- Reproducible bug reports against `zig build -Doptimize=ReleaseSafe` on
-  Zig **0.17.0**, Linux only.
-- Patches that make the code smaller, or that fix a bug.
-- Patches that remove a dependency (there are none; keep it that way).
+## Welcome
 
-## What is rejected without discussion
+- Bug fixes, especially reproducible ones with a failing case.
+- Smaller code, fewer moving parts, clearer error messages.
+- Documentation fixes.
+- Platform support, if you can test it — see "Platform" below.
+- Translations of the documentation.
 
-The following are out of scope by design, not by oversight. Issues or pull
-requests asking for them are closed without reply:
+## Out of scope for now
 
-- a GUI, a TUI wizard, or any interactive prompt
-- a Windows or macOS build, or platform-specific workarounds
-- any download source other than Mojang's own endpoints, or a mirror setting
-- automatic download of a Java runtime (a JDK is the user's business)
-- mods, modpacks, mod loaders, or installer automation
-- hosting, mirroring, or redistributing game content
-- offline mode, cracked accounts, `authlib-injector`, or any auth bypass
+Not wrong, just more than one person can keep working:
+
+- a GUI, or a wizard that walks you through setup
+- package manager recipes, prebuilt binaries, release artifacts
+- automatic download of a Java runtime
+- mods, modpacks, mod loaders, installer automation
+- offline mode, cracked accounts, `authlib-injector`, any auth bypass
 - a bundled or default Client ID
-- translations
-- telemetry, analytics, or "update check" phoning home
-- packaging into `.exe`, AppImage, Flatpak, Snap, AUR, or any release artifact
+- alternative download sources or mirrors — the host list in `README.md` is
+  the whole list
+- telemetry, analytics, or a background update check
 
-## Issue rules
+## Platform
 
-- One issue per problem. Include the command, the exit code, and the full
-  stderr.
-- **Never paste tokens.** Redact `refresh_token`, `access_token`, and
-  `identityToken`. If you paste one, revoke it.
-- Off-topic, hostile, or AI-generated noise threads are **locked without
-  reply**. Do not expect an explanation.
-- There is no feature-request process. There is no roadmap. There is no
-  maintainer obligation.
+Linux is the tested platform. Windows and macOS are currently uncovered:
+nobody has tested them, so no claim is made either way. A patch that makes
+either work is welcome — please include how you verified it.
 
-## Code rules
+## Issues
 
-- Zig 0.17.0, standard library only. No `build.zig.zon` dependencies.
-- `stdout` is for results, `stderr` for diagnostics. Preserve that.
-- Exit codes are part of the interface. Do not change them without a note in
-  the commit body.
+- One problem per issue. Include the command, the exit code and the full
+  `stderr`.
+- Never paste tokens. Redact `refresh_token`, `access_token` and
+  `identityToken`; if one leaks, revoke it.
+- Issues are read when time allows. Duplicates and off-topic threads may be
+  closed without a reply — that is triage, not a verdict.
+
+## Code
+
+- Zig 0.17.0, standard library only. `build.zig.zon` has no dependencies and
+  should stay that way.
+- `stdout` is for results, `stderr` for diagnostics. Keep that split.
+- Exit codes are part of the interface; changing one needs a note in the
+  commit body.
 - New modules need at least one `test` block that runs under `zig build test`.
 - No code path may print a token.
 - Do not add region detection beyond what `README.md` describes.
