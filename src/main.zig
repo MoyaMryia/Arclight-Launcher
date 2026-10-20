@@ -9,6 +9,7 @@ const Io = std.Io;
 const store = @import("store.zig");
 const java = @import("java.zig");
 const meta = @import("meta.zig");
+const install_mod = @import("install.zig");
 
 /// Exit codes are part of the interface: scripts branch on them.
 pub const Exit = struct {
@@ -128,13 +129,7 @@ fn dispatch(c: Ctx, cmd: []const u8, args: []const []const u8) u8 {
     if (eq(cmd, "versions")) return cmdVersions(c);
     if (eq(cmd, "logout")) return cmdLogout(c);
     if (eq(cmd, "login")) return notImplemented(c, "login", "auth.zig: device code flow");
-    if (eq(cmd, "install")) {
-        if (args.len != 1) {
-            c.err("error: install needs exactly one version id\n", .{});
-            return Exit.usage;
-        }
-        return notImplemented(c, "install", "install.zig: client jar + libraries + assets");
-    }
+    if (eq(cmd, "install")) return cmdInstall(c, args);
     if (eq(cmd, "launch")) {
         if (args.len != 1) {
             c.err("error: launch needs exactly one version id\n", .{});
@@ -308,6 +303,100 @@ fn cmdVersions(c: Ctx) u8 {
         }
         var buf2: [128]u8 = undefined;
         c.out(std.fmt.bufPrint(&buf2, "\n({d} versions total)\n", .{manifest.versions.len}) catch "");
+    }
+    return Exit.ok;
+}
+
+const InstallFlags = struct {
+    version: []const u8 = "",
+    dir: ?[]const u8 = null,
+    assets: bool = true,
+    threads: usize = 8,
+};
+
+fn parseInstallFlags(args: []const []const u8) ?InstallFlags {
+    var f: InstallFlags = .{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        if (eq(a, "--dir")) {
+            i += 1;
+            if (i >= args.len) return null;
+            f.dir = args[i];
+        } else if (eq(a, "--no-assets")) {
+            f.assets = false;
+        } else if (eq(a, "--threads")) {
+            i += 1;
+            if (i >= args.len) return null;
+            f.threads = std.fmt.parseInt(usize, args[i], 10) catch return null;
+        } else if (a.len != 0 and a[0] == '-') {
+            return null;
+        } else if (f.version.len == 0) {
+            f.version = a;
+        } else {
+            return null;
+        }
+    }
+    if (f.version.len == 0) return null;
+    return f;
+}
+
+fn cmdInstall(c: Ctx, args: []const []const u8) u8 {
+    const flags = parseInstallFlags(args) orelse {
+        c.err("usage: arclight install <version> [--dir <path>] [--no-assets] [--threads N]\n", .{});
+        return Exit.usage;
+    };
+
+    const config = store.configDir(c.arena, c.environ) catch {
+        c.err("error: cannot resolve config directory (HOME unset?)\n", .{});
+        return Exit.config;
+    };
+
+    var arena_state = std.heap.ArenaAllocator.init(c.gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const game_dir = flags.dir orelse blk: {
+        const home = c.environ.get("HOME") orelse {
+            c.err("error: --dir is required when HOME is unset\n", .{});
+            return Exit.usage;
+        };
+        break :blk std.fs.path.join(arena, &.{ home, ".minecraft" }) catch return Exit.config;
+    };
+    const cache_dir = std.fs.path.join(arena, &.{ config, "cache" }) catch return Exit.config;
+
+    if (!c.json) c.err("installing {s} into {s}\n", .{ flags.version, game_dir });
+
+    const stats = install_mod.install(c.io, c.gpa, arena, .{
+        .game_dir = game_dir,
+        .cache_dir = cache_dir,
+        .version = flags.version,
+        .want_assets = flags.assets,
+        .threads = flags.threads,
+    }) catch |e| {
+        c.err("error: install failed: {s}\n", .{@errorName(e)});
+        return switch (e) {
+            install_mod.Error.VersionNotFound => Exit.usage,
+            else => Exit.download,
+        };
+    };
+
+    if (c.json) {
+        c.emitJson(.{
+            .version = stats.version,
+            .client_bytes = stats.client_bytes,
+            .libraries = stats.libraries,
+            .libraries_skipped = stats.libraries_skipped,
+            .natives_jars = stats.natives_jars,
+            .assets = stats.assets,
+            .assets_bytes = stats.assets_bytes,
+            .legacy_assets = stats.legacy_assets,
+        });
+    } else {
+        var buf: [256]u8 = undefined;
+        c.out(std.fmt.bufPrint(&buf, "done: {d} libraries, {d} assets, client jar {d} bytes\n", .{
+            stats.libraries, stats.assets, stats.client_bytes,
+        }) catch "");
     }
     return Exit.ok;
 }

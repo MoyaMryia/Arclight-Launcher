@@ -37,9 +37,17 @@ pub const Error = error{
     EmptyUrl,
 };
 
-const max_attempts = 3;
+const max_attempts = 4;
 
+/// One-off download with a throwaway client. Use `getShared` when running a
+/// batch: a worker that keeps one client reuses its TLS connections.
 pub fn get(io: Io, gpa: std.mem.Allocator, spec: Spec) !Outcome {
+    var client: http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+    return getShared(&client, io, gpa, spec);
+}
+
+pub fn getShared(client: *http.Client, io: Io, gpa: std.mem.Allocator, spec: Spec) !Outcome {
     if (spec.url.len == 0) return Error.EmptyUrl;
 
     if (spec.dest.len != 0) {
@@ -71,9 +79,11 @@ pub fn get(io: Io, gpa: std.mem.Allocator, spec: Spec) !Outcome {
 
     var attempt: u8 = 0;
     while (attempt < max_attempts) : (attempt += 1) {
-        const result = downloadOnce(io, gpa, spec) catch |err| {
+        const result = downloadOnce(client, io, gpa, spec, attempt) catch |err| {
             if (attempt + 1 == max_attempts) return err;
-            const backoff_ms: u64 = 500 * (@as(u64, 1) << @intCast(attempt));
+            // Mojang's CDN answers a burst with a bare 400/429 and an HTML body,
+            // so back off far enough for the throttle window to pass.
+            const backoff_ms: u64 = 1000 * (@as(u64, 1) << @intCast(attempt));
             Io.sleep(io, .{ .nanoseconds = @intCast(backoff_ms * std.time.ns_per_ms) }, .awake) catch {};
             continue;
         };
@@ -82,15 +92,12 @@ pub fn get(io: Io, gpa: std.mem.Allocator, spec: Spec) !Outcome {
     unreachable;
 }
 
-fn downloadOnce(io: Io, gpa: std.mem.Allocator, spec: Spec) !Outcome {
+fn downloadOnce(client: *http.Client, io: Io, gpa: std.mem.Allocator, spec: Spec, attempt: u8) !Outcome {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
     const part = try std.fmt.allocPrint(arena, "{s}.part", .{spec.dest});
-
-    var client: http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
 
     var file = try Io.Dir.cwd().createFile(io, part, .{ .truncate = true });
     defer file.close(io);
@@ -101,6 +108,10 @@ fn downloadOnce(io: Io, gpa: std.mem.Allocator, spec: Spec) !Outcome {
     const res = try client.fetch(.{
         .location = .{ .url = spec.url },
         .response_writer = &fw.interface,
+        // A retry gets a fresh connection: a half-consumed response can
+        // otherwise leave the pooled connection in a state servers answer
+        // with a bare 400.
+        .keep_alive = attempt == 0,
         .extra_headers = &.{
             .{ .name = "user-agent", .value = user_agent },
             .{ .name = "accept", .value = "*/*" },
@@ -111,8 +122,14 @@ fn downloadOnce(io: Io, gpa: std.mem.Allocator, spec: Spec) !Outcome {
     switch (res.status) {
         .ok => {},
         else => {
+            const raw = Io.Dir.cwd().readFileAlloc(io, part, arena, Io.Limit.limited(300)) catch "";
             Io.Dir.deleteFileAbsolute(io, part) catch {};
-            std.debug.print("http {d} for {s}\n", .{ @intFromEnum(res.status), spec.url });
+            var line: [300]u8 = undefined;
+            const n = @min(raw.len, line.len);
+            for (raw[0..n], 0..) |ch, i| line[i] = if (ch == '\n' or ch == '\r' or ch == '\t') ' ' else ch;
+            std.debug.print("http {d} for {s}\n  body: {s}\n", .{
+                @intFromEnum(res.status), spec.url, line[0..n],
+            });
             return Error.HttpStatus;
         },
     }
