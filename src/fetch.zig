@@ -203,3 +203,48 @@ test "toHex" {
         &toHex(digest),
     );
 }
+
+// ---------------------------------------------------------------- json
+
+pub const Response = struct {
+    status: u16,
+    body: []const u8,
+};
+
+pub const RequestOptions = struct {
+    payload: ?[]const u8 = null,
+    content_type: ?[]const u8 = null,
+    authorization: ?[]const u8 = null,
+    accept: []const u8 = "application/json",
+};
+
+/// In-memory request for the authentication endpoints. Never used for file
+/// downloads; `get` above owns that path.
+///
+/// Note: `user-agent` must go through `Request.Headers`, not `extra_headers`.
+/// Azure's edge answers a duplicated user-agent header with a bare 400 and an
+/// HTML body, which is indistinguishable from a real failure.
+pub fn request(
+    client: *http.Client,
+    arena: std.mem.Allocator,
+    url: []const u8,
+    opts: RequestOptions,
+) !Response {
+    const extra = try arena.alloc(http.Header, 1);
+    extra[0] = .{ .name = "accept", .value = opts.accept };
+
+    var aw: Io.Writer.Allocating = .init(arena);
+    const res = try client.fetch(.{
+        .location = .{ .url = url },
+        .payload = opts.payload,
+        .response_writer = &aw.writer,
+        .headers = .{
+            .user_agent = .{ .override = user_agent },
+            .content_type = if (opts.content_type) |ct| .{ .override = ct } else .default,
+            .authorization = if (opts.authorization) |auth| .{ .override = auth } else .default,
+        },
+        .extra_headers = extra,
+        .keep_alive = false,
+    });
+    return .{ .status = @intFromEnum(res.status), .body = aw.written() };
+}

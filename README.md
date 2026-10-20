@@ -6,15 +6,16 @@ in Zig.
 ```
 arclight login              # sign in with your Microsoft account
 arclight install 1.20.1     # fetch that version from Mojang's own servers
-arclight launch 1.20.1      # start it
+arclight launch 1.20.1      # start it  (--dry-run prints the argv instead)
 arclight java               # show detected Java runtimes
 arclight status --json      # scriptable
 ```
 
 ## Status
 
-Work in progress. `versions`, `java`, `status` and `logout` work today;
-`login`, `install` and `launch` are being written.
+All commands work: `login`, `install`, `launch`, `versions`, `java`, `status`,
+`logout`. `launch` refreshes the stored session before starting the game, and
+`launch --dry-run` prints the exact argv without running it.
 
 ## Requirements
 

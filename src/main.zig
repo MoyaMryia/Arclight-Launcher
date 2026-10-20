@@ -10,6 +10,8 @@ const store = @import("store.zig");
 const java = @import("java.zig");
 const meta = @import("meta.zig");
 const install_mod = @import("install.zig");
+const auth = @import("auth.zig");
+const launch_mod = @import("launch.zig");
 
 /// Exit codes are part of the interface: scripts branch on them.
 pub const Exit = struct {
@@ -128,15 +130,9 @@ fn dispatch(c: Ctx, cmd: []const u8, args: []const []const u8) u8 {
     if (eq(cmd, "java")) return cmdJava(c);
     if (eq(cmd, "versions")) return cmdVersions(c);
     if (eq(cmd, "logout")) return cmdLogout(c);
-    if (eq(cmd, "login")) return notImplemented(c, "login", "auth.zig: device code flow");
+    if (eq(cmd, "login")) return cmdLogin(c, args);
     if (eq(cmd, "install")) return cmdInstall(c, args);
-    if (eq(cmd, "launch")) {
-        if (args.len != 1) {
-            c.err("error: launch needs exactly one version id\n", .{});
-            return Exit.usage;
-        }
-        return notImplemented(c, "launch", "launch.zig: version json + classpath");
-    }
+    if (eq(cmd, "launch")) return cmdLaunch(c, args);
 
     c.err("error: unknown command '{s}'\n\n", .{cmd});
     c.out(usage_text);
@@ -399,4 +395,178 @@ fn cmdInstall(c: Ctx, args: []const []const u8) u8 {
         }) catch "");
     }
     return Exit.ok;
+}
+
+const LoginFlags = struct {
+    client_id: []const u8 = "",
+};
+
+fn parseLoginFlags(c: Ctx, args: []const []const u8) ?LoginFlags {
+    var f: LoginFlags = .{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        if (eq(a, "--client-id")) {
+            i += 1;
+            if (i >= args.len) return null;
+            f.client_id = args[i];
+        } else if (eq(a, "--client-id=*")) {
+            return null;
+        } else if (std.mem.startsWith(u8, a, "--client-id=")) {
+            f.client_id = a["--client-id=".len..];
+        } else return null;
+    }
+    if (f.client_id.len == 0) {
+        f.client_id = c.environ.get("ARCLIGHT_CLIENT_ID") orelse "";
+    }
+    if (f.client_id.len == 0) return null;
+    return f;
+}
+
+fn cmdLogin(c: Ctx, args: []const []const u8) u8 {
+    const flags = parseLoginFlags(c, args) orelse {
+        c.err(
+            "usage: arclight login --client-id <guid>\n" ++
+                "       (or set ARCLIGHT_CLIENT_ID)\n" ++
+                "no Client ID is bundled: see README.md\n",
+            .{},
+        );
+        return Exit.usage;
+    };
+
+    var arena_state = std.heap.ArenaAllocator.init(c.gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const result = auth.login(c.io, c.gpa, arena, .{ .client_id = flags.client_id }) catch |e| {
+        if (!c.json) c.err("\n", .{});
+        return switch (e) {
+            auth.Error.AppIdNotAuthorized => Exit.appid_not_authorized,
+            auth.Error.GameNotOwned => Exit.no_ownership,
+            else => Exit.auth,
+        };
+    };
+
+    const dir = store.configDir(c.arena, c.environ) catch {
+        c.err("error: cannot resolve config directory\n", .{});
+        return Exit.config;
+    };
+    store.save(c.io, dir, .{
+        .client_id = result.client_id,
+        .name = result.name,
+        .uuid = result.uuid,
+        .refresh_token = result.refresh_token,
+        .updated_at = 0,
+    }) catch |e| {
+        c.err("error: cannot write account file: {s}\n", .{@errorName(e)});
+        return Exit.config;
+    };
+
+    if (c.json) {
+        c.emitJson(store.Public.from(.{
+            .client_id = result.client_id,
+            .name = result.name,
+            .uuid = result.uuid,
+            .refresh_token = result.refresh_token,
+            .updated_at = 0,
+        }));
+    } else {
+        c.out("signed in\n");
+    }
+    return Exit.ok;
+}
+
+const LaunchFlags = struct {
+    version: []const u8 = "",
+    dir: ?[]const u8 = null,
+    dry_run: bool = false,
+};
+
+fn parseLaunchFlags(args: []const []const u8) ?LaunchFlags {
+    var f: LaunchFlags = .{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        if (eq(a, "--dir")) {
+            i += 1;
+            if (i >= args.len) return null;
+            f.dir = args[i];
+        } else if (eq(a, "--dry-run")) {
+            f.dry_run = true;
+        } else if (a.len != 0 and a[0] == '-') {
+            return null;
+        } else if (f.version.len == 0) {
+            f.version = a;
+        } else return null;
+    }
+    if (f.version.len == 0) return null;
+    return f;
+}
+
+fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
+    const flags = parseLaunchFlags(args) orelse {
+        c.err("usage: arclight launch <version> [--dir <path>] [--dry-run]\n", .{});
+        return Exit.usage;
+    };
+
+    var arena_state = std.heap.ArenaAllocator.init(c.gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const game_dir = flags.dir orelse blk: {
+        const home = c.environ.get("HOME") orelse return Exit.usage;
+        break :blk std.fs.path.join(arena, &.{ home, ".minecraft" }) catch return Exit.config;
+    };
+
+    // A missing account is fatal unless we are only printing the command line.
+    var account: ?store.Account = null;
+    if (store.configDir(arena, c.environ)) |dir| {
+        account = store.load(c.io, arena, dir) catch null;
+    } else |_| {}
+
+    const outcome = launch_mod.launch(c.io, c.gpa, arena, .{
+        .game_dir = game_dir,
+        .version = flags.version,
+        .dry_run = flags.dry_run,
+        .environ = c.environ,
+    }, account) catch |e| {
+        switch (e) {
+            launch_mod.Error.VersionNotInstalled => c.err(
+                "error: {s} is not installed in {s}\n" ++
+                    "hint: arclight install {s} --dir {s}\n",
+                .{ flags.version, game_dir, flags.version, game_dir },
+            ),
+            launch_mod.Error.ParentNotInstalled => c.err(
+                "error: this version inherits from another one that is not installed\n",
+                .{},
+            ),
+            launch_mod.Error.NotLoggedIn => c.err(
+                "error: not logged in (or the stored session expired)\n" ++
+                    "hint: arclight login --client-id <guid>\n",
+                .{},
+            ),
+            launch_mod.Error.NoJava => c.err(
+                "error: no Java runtime found\n" ++
+                    "hint: install a JDK or set JAVA_HOME / ARCLIGHT_JAVA\n",
+                .{},
+            ),
+            launch_mod.Error.NoMainClass => c.err("error: the version json has no mainClass\n", .{}),
+            else => c.err("error: launch failed: {s}\n", .{@errorName(e)}),
+        }
+        return switch (e) {
+            launch_mod.Error.NoJava => Exit.java_missing,
+            launch_mod.Error.NotLoggedIn => Exit.auth,
+            launch_mod.Error.VersionNotInstalled, launch_mod.Error.ParentNotInstalled => Exit.usage,
+            else => Exit.download,
+        };
+    };
+
+    if (flags.dry_run) {
+        for (outcome.argv) |a| {
+            c.out(a);
+            c.out("\n");
+        }
+        return Exit.ok;
+    }
+    return if (outcome.exit_code == 0) Exit.ok else Exit.auth;
 }

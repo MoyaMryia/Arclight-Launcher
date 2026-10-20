@@ -47,6 +47,8 @@ pub const Rule = struct {
 };
 
 pub const Artifact = struct {
+    /// Logging configs carry `id` instead of `path`.
+    id: ?[]const u8 = null,
     path: []const u8 = "",
     sha1: []const u8 = "",
     size: u64 = 0,
@@ -103,6 +105,12 @@ pub const JavaVersion = struct {
     majorVersion: u32 = 0,
 };
 
+pub const LoggingFile = struct {
+    argument: []const u8 = "-Dlog4j.configurationFile=${path}",
+    file: Artifact,
+    type: []const u8 = "log4j2-xml",
+};
+
 pub const VersionJson = struct {
     id: []const u8,
     type: ?[]const u8 = null,
@@ -118,6 +126,7 @@ pub const VersionJson = struct {
     minecraftArguments: ?[]const u8 = null,
     inheritsFrom: ?[]const u8 = null,
     releaseTime: ?[]const u8 = null,
+    logging: ?struct { client: ?LoggingFile = null } = null,
 };
 
 // ---------------------------------------------------------------- rules
