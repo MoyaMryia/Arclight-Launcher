@@ -9,7 +9,7 @@ const std = @import("std");
 const Io = std.Io;
 const http = std.http;
 
-pub const user_agent = "mccli/0.0.0 (+https://github.com/)";
+pub const user_agent = "arclight/0.0.0 (+https://github.com/MoyaMryia/Arclight-Launcher)";
 
 pub const Spec = struct {
     url: []const u8,

@@ -1,12 +1,12 @@
-# mccli
+# Arclight Launcher
 
 A minimal Minecraft: **Java Edition** launcher for the command line.
 
 ```
-mccli login              # Microsoft account, device code flow
-mccli launch 1.20.1      # start a version you already installed
-mccli java               # list detected runtimes
-mccli status --json      # scriptable
+arclight login              # Microsoft account, device code flow
+arclight launch 1.20.1      # start a version you already installed
+arclight java               # list detected runtimes
+arclight status --json      # scriptable
 ```
 
 ---
@@ -23,7 +23,7 @@ There are no binaries, no releases, and no CI artifacts.
 
 ```
 zig build -Doptimize=ReleaseSafe
-./zig-out/bin/mccli help
+./zig-out/bin/arclight help
 ```
 
 **2. Requires your own Microsoft Entra application (Client ID).**
@@ -35,7 +35,7 @@ No Client ID is bundled, and none will be provided. You must:
 - request access for it at <https://aka.ms/mce-reviewappid>,
 - wait for approval (weeks, not minutes).
 
-Without approval, `mccli login` fails with `HTTP 403 Invalid app registration`
+Without approval, `arclight login` fails with `HTTP 403 Invalid app registration`
 and exit code `11`. That is expected behaviour, not a bug.
 
 **3. Microsoft account required. There is no offline mode.**
@@ -104,13 +104,13 @@ Scripts branch on these.
 | 70 | not implemented yet |
 
 `stdout` carries results, `stderr` carries progress and errors, so
-`mccli status --json | jq` is safe.
+`arclight status --json | jq` is safe.
 
 ---
 
 ## Security
 
-Tokens are stored at `${XDG_CONFIG_HOME:-~/.config}/mccli/account.json` with
+Tokens are stored at `${XDG_CONFIG_HOME:-~/.config}/arclight/account.json` with
 mode `0600`. Token values never appear in logs or in `--json` output. See
 `SECURITY.md`.
 

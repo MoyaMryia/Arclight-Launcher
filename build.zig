@@ -24,10 +24,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const exe = b.addExecutable(.{ .name = "mccli", .root_module = mod });
+    const exe = b.addExecutable(.{ .name = "arclight", .root_module = mod });
     b.installArtifact(exe);
 
-    const run_step = b.step("run", "Run mccli");
+    const run_step = b.step("run", "Run arclight");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     run_cmd.addPassthruArgs();

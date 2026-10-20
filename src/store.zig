@@ -44,20 +44,20 @@ pub const Error = error{
     CorruptAccountFile,
 };
 
-/// Resolve `$XDG_CONFIG_HOME/mccli`, falling back to `$HOME/.config/mccli`.
+/// Resolve `$XDG_CONFIG_HOME/arclight`, falling back to `$HOME/.config/arclight`.
 /// Caller owns the returned slice (use an arena).
 pub fn configDir(
     arena: std.mem.Allocator,
     environ: *const std.process.Environ.Map,
 ) ![]const u8 {
-    if (environ.get("MCCLI_CONFIG_DIR")) |custom| {
+    if (environ.get("ARCLIGHT_CONFIG_DIR")) |custom| {
         if (custom.len != 0) return arena.dupe(u8, custom);
     }
     if (environ.get("XDG_CONFIG_HOME")) |xdg| {
-        if (xdg.len != 0) return std.fs.path.join(arena, &.{ xdg, "mccli" });
+        if (xdg.len != 0) return std.fs.path.join(arena, &.{ xdg, "arclight" });
     }
     const home = environ.get("HOME") orelse return Error.NoHomeDirectory;
-    return std.fs.path.join(arena, &.{ home, ".config", "mccli" });
+    return std.fs.path.join(arena, &.{ home, ".config", "arclight" });
 }
 
 pub fn accountPath(arena: std.mem.Allocator, dir: []const u8) ![]const u8 {
@@ -125,7 +125,7 @@ test "public view never carries the refresh token" {
     try std.testing.expect(std.mem.indexOf(u8, body, "SECRET") == null);
 }
 
-test "config dir honours MCCLI_CONFIG_DIR" {
+test "config dir honours ARCLIGHT_CONFIG_DIR" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -133,6 +133,6 @@ test "config dir honours MCCLI_CONFIG_DIR" {
     var environ: std.process.Environ.Map = .init(std.testing.allocator);
     defer environ.deinit();
 
-    try environ.put("MCCLI_CONFIG_DIR", "/tmp/mccli-test");
-    try std.testing.expectEqualStrings("/tmp/mccli-test", try configDir(arena, &environ));
+    try environ.put("ARCLIGHT_CONFIG_DIR", "/tmp/arclight-test");
+    try std.testing.expectEqualStrings("/tmp/arclight-test", try configDir(arena, &environ));
 }

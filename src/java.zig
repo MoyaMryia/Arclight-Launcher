@@ -13,7 +13,7 @@ fn isExecutableFile(io: Io, path: []const u8) bool {
 }
 
 /// Collect `java` candidates, in preference order:
-///   1. `$MCCLI_JAVA` (explicit override)
+///   1. `$ARCLIGHT_JAVA` (explicit override)
 ///   2. `$JAVA_HOME/bin/java`
 ///   3. every `PATH` entry containing an executable `java`
 ///
@@ -40,7 +40,7 @@ pub fn candidates(
     }.call;
 
     // 1. explicit override
-    if (environ.get("MCCLI_JAVA")) |custom| {
+    if (environ.get("ARCLIGHT_JAVA")) |custom| {
         if (custom.len != 0) try push(&out, &seen, try arena.dupe(u8, custom));
     }
 

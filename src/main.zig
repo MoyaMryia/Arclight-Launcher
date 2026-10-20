@@ -1,4 +1,4 @@
-//! mccli - a minimal Minecraft: Java Edition launcher.
+//! arclight - a minimal Minecraft: Java Edition launcher.
 //!
 //! Scope is deliberately narrow, see README.md. Anything that would turn this
 //! into a distribution channel for game content is out of scope by design.
@@ -51,10 +51,10 @@ pub const Ctx = struct {
 };
 
 const usage_text =
-    \\mccli - minimal Minecraft: Java Edition launcher
+    \\arclight - minimal Minecraft: Java Edition launcher
     \\
     \\USAGE:
-    \\    mccli <command> [options]
+    \\    arclight <command> [options]
     \\
     \\COMMANDS:
     \\    login              Sign in with a Microsoft account (device code flow)
@@ -157,7 +157,7 @@ fn cmdVersion(c: Ctx) u8 {
         c.emitJson(info);
     } else {
         var buf: [256]u8 = undefined;
-        const line = std.fmt.bufPrint(&buf, "mccli {s} (zig {s}, {s})\n", .{
+        const line = std.fmt.bufPrint(&buf, "arclight {s} (zig {s}, {s})\n", .{
             info.name, info.zig, info.platform,
         }) catch return Exit.ok;
         c.out(line);
@@ -241,8 +241,8 @@ fn cmdJava(c: Ctx) u8 {
     if (list.len == 0) {
         c.err(
             "error: no Java runtime found\n" ++
-                "hint: install a JDK or set JAVA_HOME / MCCLI_JAVA\n" ++
-                "note: mccli never downloads a runtime\n",
+                "hint: install a JDK or set JAVA_HOME / ARCLIGHT_JAVA\n" ++
+                "note: arclight never downloads a runtime\n",
             .{},
         );
         if (c.json) c.emitJson(.{ .found = [_][]const u8{}, .count = @as(usize, 0) });

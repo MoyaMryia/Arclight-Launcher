@@ -4,7 +4,7 @@
 
 | item | where | protection |
 |---|---|---|
-| Microsoft refresh token | `${XDG_CONFIG_HOME:-~/.config}/mccli/account.json` | file mode `0600`, directory created by the tool |
+| Microsoft refresh token | `${XDG_CONFIG_HOME:-~/.config}/arclight/account.json` | file mode `0600`, directory created by the tool |
 | Minecraft access token | memory only, never written | — |
 | Client ID | `account.json` | public value, not a secret |
 
@@ -33,7 +33,7 @@ will be asked for details through a private channel.
 Do not publish a reproducer before a fix ships.
 
 If a token may have leaked, revoke it first: signing out of the account in
-`mccli logout`, then changing the Microsoft account password, invalidates the
+`arclight logout`, then changing the Microsoft account password, invalidates the
 refresh token.
 
 ## Out of scope
