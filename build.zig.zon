@@ -1,0 +1,16 @@
+.{
+    .name = .mccli,
+    .version = "0.0.0",
+    .fingerprint = 0x39a49422f3b4c5a5, // Changing this has security and trust implications.
+    // Pinned deliberately: Zig is pre-1.0 and breaks std APIs between releases.
+    // This is part of the project's design, not an oversight.
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "README.md",
+        "LICENSE",
+    },
+}
