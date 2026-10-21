@@ -24,7 +24,6 @@ pub const Exit = struct {
     pub const no_ownership: u8 = 12;
     pub const download: u8 = 20;
     pub const java_missing: u8 = 30;
-    pub const unimplemented: u8 = 70;
 };
 
 pub const Ctx = struct {
@@ -64,23 +63,34 @@ const usage_text =
     \\    login              Sign in with a Microsoft account (device code flow)
     \\    versions           List Minecraft versions from Mojang's manifest
     \\    install <version>  Fetch a version, its libraries and assets
+    \\    launch <version>   Start an installed version
     \\    status             Show the stored account (never prints tokens)
     \\    logout             Forget the stored account
     \\    java               List detected Java runtimes
-    \\    launch <version>   Start a version already installed by the official launcher
     \\    help               Show this text
     \\    version            Show version information
     \\
     \\OPTIONS:
     \\    --json             Machine-readable output on stdout
+    \\    --dir <path>       Game directory for install/launch (default ~/.minecraft)
+    \\    --dry-run          With launch: print the java command line, do not run it
+    \\    --no-assets        With install: skip assets/objects
+    \\    --threads <n>      With install: parallel downloads (default 8)
+    \\    --client-id <guid> With login: your own Entra application ID
     \\
     \\EXIT CODES:
     \\     0 success      2 usage        3 config      10 auth failed
-    \\    11 AppID not authorized by Minecraft      12 account does not own the game
+    \\    11 Client ID not authorized by Minecraft Services
+    \\    12 account does not own the game
     \\    20 download failed                       30 no Java runtime found
-    \\    70 not implemented yet
     \\
-    \\This tool does not download, mirror or host any game files.
+    \\Game files are fetched only from Mojang's own endpoints
+    \\(piston-meta, piston-data, libraries.minecraft.net, resources.download.minecraft.net)
+    \\and verified against the SHA-1 in Mojang's metadata. Nothing is hosted or
+    \\mirrored, and there is no download-source setting.
+    \\
+    \\No Client ID is bundled: each user registers their own application and
+    \\requests access at https://aka.ms/mce-reviewappid.
     \\
 ;
 
@@ -262,11 +272,6 @@ fn cmdJava(c: Ctx) u8 {
     return Exit.ok;
 }
 
-fn notImplemented(c: Ctx, what: []const u8, detail: []const u8) u8 {
-    c.err("error: '{s}' is not implemented yet ({s})\n", .{ what, detail });
-    if (c.json) c.emitJson(.{ .err = "not_implemented", .cmd = what });
-    return Exit.unimplemented;
-}
 
 fn cmdVersions(c: Ctx) u8 {
     const dir = store.configDir(c.arena, c.environ) catch {
