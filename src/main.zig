@@ -12,6 +12,7 @@ const meta = @import("meta.zig");
 const install_mod = @import("install.zig");
 const auth = @import("auth.zig");
 const launch_mod = @import("launch.zig");
+const fabric = @import("fabric.zig");
 
 /// Exit codes are part of the interface: scripts branch on them.
 pub const Exit = struct {
@@ -313,6 +314,10 @@ const InstallFlags = struct {
     dir: ?[]const u8 = null,
     assets: bool = true,
     threads: usize = 8,
+    /// Install Fabric instead of the bare version.
+    fabric: bool = false,
+    /// Explicit loader version; empty means "latest stable".
+    loader: []const u8 = "",
 };
 
 fn parseInstallFlags(args: []const []const u8) ?InstallFlags {
@@ -324,6 +329,12 @@ fn parseInstallFlags(args: []const []const u8) ?InstallFlags {
             i += 1;
             if (i >= args.len) return null;
             f.dir = args[i];
+        } else if (eq(a, "--fabric")) {
+            f.fabric = true;
+        } else if (eq(a, "--loader")) {
+            i += 1;
+            if (i >= args.len) return null;
+            f.loader = args[i];
         } else if (eq(a, "--no-assets")) {
             f.assets = false;
         } else if (eq(a, "--threads")) {
@@ -382,9 +393,28 @@ fn cmdInstall(c: Ctx, args: []const []const u8) u8 {
         };
     };
 
+    var loader_id: ?[]const u8 = null;
+    if (flags.fabric) {
+        const loader = if (flags.loader.len != 0) flags.loader else fabric.resolveLoader(
+            c.io,
+            c.gpa,
+            arena,
+            flags.version,
+        ) catch |e| {
+            c.err("error: cannot resolve a Fabric loader for {s}: {s}\n", .{ flags.version, @errorName(e) });
+            return Exit.download;
+        };
+        loader_id = fabric.installProfile(c.io, c.gpa, arena, game_dir, flags.version, loader) catch |e| {
+            c.err("error: Fabric install failed: {s}\n", .{@errorName(e)});
+            return Exit.download;
+        };
+        if (!c.json) c.err("fabric loader {s} -> {s}\n", .{ loader, loader_id.? });
+    }
+
     if (c.json) {
         c.emitJson(.{
             .version = stats.version,
+            .fabric = loader_id orelse "",
             .client_bytes = stats.client_bytes,
             .libraries = stats.libraries,
             .libraries_skipped = stats.libraries_skipped,

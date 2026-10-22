@@ -189,6 +189,45 @@ pub fn allowed(rules: ?[]const Rule) bool {
     return result;
 }
 
+// ---------------------------------------------------------------- maven
+
+pub const MavenPath = struct {
+    /// `<group path>/<artifact>/<version>/<file>.jar`, relative to `libraries/`.
+    rel: []const u8,
+    url: []const u8,
+};
+
+/// Resolve `group:artifact:version[:classifier]` against the library's maven
+/// base. Needed for entries that carry no `downloads` block: Fabric ships all
+/// of its libraries that way.
+pub fn mavenPath(
+    arena: std.mem.Allocator,
+    lib: Library,
+    classifier: ?[]const u8,
+) !?MavenPath {
+    var parts = std.mem.splitScalar(u8, lib.name, ':');
+    const group = parts.next() orelse return null;
+    const artifact = parts.next() orelse return null;
+    const version = parts.next() orelse return null;
+    const name_classifier = parts.next();
+
+    const cls = classifier orelse name_classifier;
+    const file = if (cls) |c|
+        try std.fmt.allocPrint(arena, "{s}-{s}-{s}.jar", .{ artifact, version, c })
+    else
+        try std.fmt.allocPrint(arena, "{s}-{s}.jar", .{ artifact, version });
+
+    const group_path = try arena.dupe(u8, group);
+    for (group_path) |*ch| {
+        if (ch.* == '.') ch.* = '/';
+    }
+
+    const rel = try std.fmt.allocPrint(arena, "{s}/{s}/{s}/{s}", .{ group_path, artifact, version, file });
+    const base = lib.url orelse "https://libraries.minecraft.net/";
+    const url = try std.fmt.allocPrint(arena, "{s}/{s}", .{ std.mem.trimEnd(u8, base, "/"), rel });
+    return .{ .rel = rel, .url = url };
+}
+
 // ---------------------------------------------------------------- loading
 
 pub fn loadManifest(

@@ -115,16 +115,42 @@ pub fn launch(
         const doc = chain[i];
         for (doc.libraries orelse &.{}) |lib| {
             if (!meta.allowed(lib.rules)) continue;
-            const dls = lib.downloads orelse continue;
-            const artifact = dls.artifact orelse continue;
-            const p = try std.fmt.allocPrint(arena, "{s}/libraries/{s}", .{ opts.game_dir, artifact.path });
-            try cp.appendSlice(arena, p);
-            try cp.append(arena, sep);
+
+            if (lib.downloads) |dls| {
+                if (dls.artifact) |artifact| {
+                    const p = try std.fmt.allocPrint(arena, "{s}/libraries/{s}", .{
+                        opts.game_dir, artifact.path,
+                    });
+                    try cp.appendSlice(arena, p);
+                    try cp.append(arena, sep);
+                    continue;
+                }
+            }
+            // No `downloads` block: resolve the maven coordinate. Fabric's
+            // libraries all look like this.
+            if (try meta.mavenPath(arena, lib, null)) |m| {
+                const p = try std.fmt.allocPrint(arena, "{s}/libraries/{s}", .{
+                    opts.game_dir, m.rel,
+                });
+                try cp.appendSlice(arena, p);
+                try cp.append(arena, sep);
+            }
         }
     }
-    const client_jar = try std.fmt.allocPrint(arena, "{s}/versions/{s}/{s}.jar", .{
+    // A mod loader's version json inherits from vanilla and has no jar of its
+    // own: walk the chain and use the first client jar that is actually there.
+    var client_jar: []const u8 = try std.fmt.allocPrint(arena, "{s}/versions/{s}/{s}.jar", .{
         opts.game_dir, leaf.id, leaf.id,
     });
+    for (chain[0..chain_len]) |doc| {
+        const candidate = try std.fmt.allocPrint(arena, "{s}/versions/{s}/{s}.jar", .{
+            opts.game_dir, doc.id, doc.id,
+        });
+        const f = Io.Dir.openFileAbsolute(io, candidate, .{}) catch continue;
+        f.close(io);
+        client_jar = candidate;
+        break;
+    }
     try cp.appendSlice(arena, client_jar);
 
     // ---- natives dir ---------------------------------------------------

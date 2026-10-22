@@ -93,83 +93,7 @@ pub fn install(
     say(opts, "client jar {d} bytes{s}\n", .{ client_out.bytes, if (client_out.cached) " (cached)" else "" });
 
     // --- libraries ----------------------------------------------------
-    var jobs: std.ArrayList(Job) = .empty;
-    const natives_jobs: []Job = blk: {
-        var native_list: std.ArrayList(Job) = .empty;
-        defer native_list.deinit(arena);
-
-        for (doc.libraries orelse &.{}) |lib| {
-            if (!meta.allowed(lib.rules)) {
-                stats.libraries_skipped += 1;
-                continue;
-            }
-
-            if (lib.downloads) |dls| {
-                if (dls.artifact) |artifact| {
-                    const dest = try std.fs.path.join(arena, &.{ opts.game_dir, "libraries", artifact.path });
-                    try jobs.append(arena, .{
-                        .url = artifact.url,
-                        .dest = dest,
-                        .sha1 = artifact.sha1,
-                        .size = artifact.size,
-                    });
-                    stats.libraries += 1;
-                }
-            } else if (try mavenArtifact(arena, lib, null)) |m| {
-                // Libraries from before the `downloads` field existed.
-                try jobs.append(arena, .{ .url = m.url, .dest = m.dest });
-                stats.libraries += 1;
-            }
-
-            // Legacy natives: a classifier jar that must be unpacked.
-            if (lib.natives) |natives| {
-                const key = natives.map.get(meta.osName()) orelse continue;
-                if (key.len == 0) continue;
-
-                var url: ?[]const u8 = null;
-                var sha1: ?[]const u8 = null;
-                var size: ?u64 = null;
-
-                if (lib.downloads) |dls| {
-                    if (dls.classifiers) |classifiers| {
-                        if (classifiers.map.get(key)) |artifact| {
-                            url = artifact.url;
-                            sha1 = artifact.sha1;
-                            size = artifact.size;
-                        }
-                    }
-                }
-                if (url == null) {
-                    if (try mavenArtifact(arena, lib, key)) |m| url = m.url;
-                }
-                const jar_url = url orelse continue;
-
-                const dest = try std.fmt.allocPrint(arena, "{s}/natives/{s}.jar", .{ opts.cache_dir, sanitize(arena, key) catch key });
-                try native_list.append(arena, .{ .url = jar_url, .dest = dest, .sha1 = sha1, .size = size });
-                stats.natives_jars += 1;
-            }
-        }
-        break :blk try native_list.toOwnedSlice(arena);
-    };
-
-    say(opts, "libraries: {d} to fetch, {d} skipped by rules\n", .{ jobs.items.len, stats.libraries_skipped });
-    try runBatch(io, gpa, arena, jobs.items, opts);
-
-    if (natives_jobs.len != 0) {
-        try runBatch(io, gpa, arena, natives_jobs, opts);
-        const natives_dir = try std.fs.path.join(arena, &.{ version_dir, "natives" });
-        try Io.Dir.cwd().createDirPath(io, natives_dir);
-        const out_dir = try Io.Dir.cwd().openDir(io, natives_dir, .{});
-        defer out_dir.close(io);
-        for (natives_jobs) |job| {
-            var jar = try Io.Dir.openFileAbsolute(io, job.dest, .{});
-            defer jar.close(io);
-            var rbuf: [64 * 1024]u8 = undefined;
-            var fr: Io.File.Reader = .init(jar, io, &rbuf);
-            extractJar(&fr, out_dir, opts);
-        }
-        say(opts, "natives unpacked into {s}\n", .{natives_dir});
-    }
+    try installLibraries(io, gpa, arena, opts, doc, version_dir, &stats);
 
     // --- assets -------------------------------------------------------
     if (opts.want_assets) {
@@ -240,6 +164,98 @@ fn extractJar(fr: *Io.File.Reader, dest: Io.Dir, opts: Options) void {
     }
 }
 
+/// Download the libraries (and legacy natives) declared by one version json.
+/// Shared by the vanilla install and by `fabric.zig`, which needs the same
+/// treatment for the profile JSON the Fabric meta server hands out.
+pub fn installLibraries(
+    io: Io,
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    opts: Options,
+    doc: meta.VersionJson,
+    version_dir: []const u8,
+    stats: *Stats,
+) !void {
+    var jobs: std.ArrayList(Job) = .empty;
+    var native_list: std.ArrayList(Job) = .empty;
+
+    for (doc.libraries orelse &.{}) |lib| {
+        if (!meta.allowed(lib.rules)) {
+            stats.libraries_skipped += 1;
+            continue;
+        }
+
+        if (lib.downloads) |dls| {
+            if (dls.artifact) |artifact| {
+                const dest = try std.fs.path.join(arena, &.{ opts.game_dir, "libraries", artifact.path });
+                try jobs.append(arena, .{
+                    .url = artifact.url,
+                    .dest = dest,
+                    .sha1 = artifact.sha1,
+                    .size = artifact.size,
+                });
+                stats.libraries += 1;
+            }
+        } else if (try meta.mavenPath(arena, lib, null)) |m| {
+            // Entries with no `downloads` block: Fabric ships its libraries
+            // as bare maven coordinates plus a base url.
+            const dest = try std.fs.path.join(arena, &.{ opts.game_dir, "libraries", m.rel });
+            try jobs.append(arena, .{ .url = m.url, .dest = dest });
+            stats.libraries += 1;
+        }
+
+        // Legacy natives: a classifier jar that must be unpacked.
+        if (lib.natives) |natives| {
+            const key = natives.map.get(meta.osName()) orelse continue;
+            if (key.len == 0) continue;
+
+            var url: ?[]const u8 = null;
+            var sha1: ?[]const u8 = null;
+            var size: ?u64 = null;
+
+            if (lib.downloads) |dls| {
+                if (dls.classifiers) |classifiers| {
+                    if (classifiers.map.get(key)) |artifact| {
+                        url = artifact.url;
+                        sha1 = artifact.sha1;
+                        size = artifact.size;
+                    }
+                }
+            }
+            if (url == null) {
+                if (try meta.mavenPath(arena, lib, key)) |m| url = m.url;
+            }
+            const jar_url = url orelse continue;
+
+            const dest = try std.fmt.allocPrint(arena, "{s}/natives/{s}.jar", .{
+                opts.cache_dir, try sanitize(arena, key),
+            });
+            try native_list.append(arena, .{ .url = jar_url, .dest = dest, .sha1 = sha1, .size = size });
+            stats.natives_jars += 1;
+        }
+    }
+
+    say(opts, "libraries: {d} to fetch, {d} skipped by rules\n", .{ jobs.items.len, stats.libraries_skipped });
+    try runBatch(io, gpa, arena, jobs.items, opts);
+
+    if (native_list.items.len != 0) {
+        try runBatch(io, gpa, arena, native_list.items, opts);
+        const natives_dir = try std.fs.path.join(arena, &.{ version_dir, "natives" });
+        try Io.Dir.cwd().createDirPath(io, natives_dir);
+        const out_dir = try Io.Dir.cwd().openDir(io, natives_dir, .{});
+        defer out_dir.close(io);
+        for (native_list.items) |job| {
+            var jar = try Io.Dir.openFileAbsolute(io, job.dest, .{});
+            defer jar.close(io);
+            var rbuf: [64 * 1024]u8 = undefined;
+            var fr: Io.File.Reader = .init(jar, io, &rbuf);
+            extractJar(&fr, out_dir, opts);
+        }
+        say(opts, "natives unpacked into {s}\n", .{natives_dir});
+    }
+}
+
+
 fn sanitize(arena: std.mem.Allocator, name: []const u8) ![]const u8 {
     const out = try arena.dupe(u8, name);
     for (out) |*ch| {
@@ -252,7 +268,12 @@ const Maven = struct { url: []const u8, dest: []const u8 };
 
 /// Resolve `group:artifact:version[:classifier]` against the library's maven
 /// base (default `libraries.minecraft.net`).
-fn mavenArtifact(arena: std.mem.Allocator, lib: meta.Library, classifier: ?[]const u8) !?Maven {
+fn mavenArtifact(
+    arena: std.mem.Allocator,
+    game_dir: []const u8,
+    lib: meta.Library,
+    classifier: ?[]const u8,
+) !?Maven {
     var parts = std.mem.splitScalar(u8, lib.name, ':');
     const group = parts.next() orelse return null;
     const artifact = parts.next() orelse return null;
@@ -273,7 +294,8 @@ fn mavenArtifact(arena: std.mem.Allocator, lib: meta.Library, classifier: ?[]con
     const base = lib.url orelse "https://libraries.minecraft.net/";
     const rel = try std.fmt.allocPrint(arena, "{s}/{s}/{s}/{s}", .{ group_path, artifact, version, file });
     const url = try std.fmt.allocPrint(arena, "{s}/{s}", .{ std.mem.trimEnd(u8, base, "/"), rel });
-    return .{ .url = url, .dest = rel };
+    const dest = try std.fs.path.join(arena, &.{ game_dir, "libraries", rel });
+    return .{ .url = url, .dest = dest };
 }
 
 // ---------------------------------------------------------------- batch
