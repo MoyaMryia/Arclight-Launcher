@@ -424,18 +424,12 @@ fn parseLoginFlags(c: Ctx, args: []const []const u8) ?LoginFlags {
     if (f.client_id.len == 0) {
         f.client_id = c.environ.get("ARCLIGHT_CLIENT_ID") orelse "";
     }
-    if (f.client_id.len == 0) return null;
     return f;
 }
 
 fn cmdLogin(c: Ctx, args: []const []const u8) u8 {
     const flags = parseLoginFlags(c, args) orelse {
-        c.err(
-            "usage: arclight login --client-id <guid>\n" ++
-                "       (or set ARCLIGHT_CLIENT_ID)\n" ++
-                "no Client ID is bundled: see README.md\n",
-            .{},
-        );
+        c.err("usage: arclight login [--client-id <guid>]\n", .{});
         return Exit.usage;
     };
 
@@ -443,7 +437,31 @@ fn cmdLogin(c: Ctx, args: []const []const u8) u8 {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const result = auth.login(c.io, c.gpa, arena, .{ .client_id = flags.client_id }) catch |e| {
+    const dir = store.configDir(arena, c.environ) catch {
+        c.err("error: cannot resolve config directory\n", .{});
+        return Exit.config;
+    };
+
+    // Client ID resolution order: --client-id, ARCLIGHT_CLIENT_ID, then the one
+    // this account was last signed in with. Refresh tokens are bound to it, so
+    // re-using the stored value is what a re-login after expiry wants.
+    var client_id = flags.client_id;
+    if (client_id.len == 0) {
+        if (store.load(c.io, arena, dir) catch null) |acc| {
+            if (acc.client_id.len != 0) client_id = acc.client_id;
+        }
+    }
+    if (client_id.len == 0) {
+        c.err(
+            "error: no Client ID given and none stored.\n" ++
+                "usage: arclight login --client-id <guid>   (or set ARCLIGHT_CLIENT_ID)\n" ++
+                "no Client ID is bundled: see README.md\n",
+            .{},
+        );
+        return Exit.usage;
+    }
+
+    const result = auth.login(c.io, c.gpa, arena, .{ .client_id = client_id }) catch |e| {
         if (!c.json) c.err("\n", .{});
         return switch (e) {
             auth.Error.AppIdNotAuthorized => Exit.appid_not_authorized,
@@ -452,10 +470,6 @@ fn cmdLogin(c: Ctx, args: []const []const u8) u8 {
         };
     };
 
-    const dir = store.configDir(c.arena, c.environ) catch {
-        c.err("error: cannot resolve config directory\n", .{});
-        return Exit.config;
-    };
     store.save(c.io, dir, .{
         .client_id = result.client_id,
         .name = result.name,
