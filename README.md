@@ -17,6 +17,14 @@ All commands work: `login`, `install`, `launch`, `versions`, `java`, `status`,
 `logout`. `launch` refreshes the stored session before starting the game, and
 `launch --dry-run` prints the exact argv without running it.
 
+`install` takes an optional mod loader:
+
+```
+arclight install 1.20.1 --fabric        # profile json from meta.fabricmc.net
+arclight install 1.20.1 --forge         # runs the official installer
+arclight install 1.21.1 --neoforge      # runs the official installer
+```
+
 ## Requirements
 
 **Zig 0.17.0.** This is built and tested against that release. Zig is pre-1.0

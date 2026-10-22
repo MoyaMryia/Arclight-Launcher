@@ -65,6 +65,7 @@ const usage_text =
     \\    login              Sign in with a Microsoft account (device code flow)
     \\    versions           List Minecraft versions from Mojang's manifest
     \\    install <version>  Fetch a version, its libraries and assets
+    \\                       --fabric | --forge | --neoforge add a mod loader
     \\    launch <version>   Start an installed version
     \\    status             Show the stored account (never prints tokens)
     \\    logout             Forget the stored account
@@ -79,6 +80,8 @@ const usage_text =
     \\    --no-assets        With install: skip assets/objects
     \\    --threads <n>      With install: parallel downloads (default 8)
     \\    --client-id <guid> With login: your own Entra application ID
+    \\    --loader <ver>     With install: pin the loader build
+    \\    --installer <path> With install: use a locally downloaded installer jar
     \\
     \\EXIT CODES:
     \\     0 success      2 usage        3 config      10 auth failed
@@ -321,6 +324,8 @@ const InstallFlags = struct {
     loader_kind: ?loaders.Kind = null,
     /// Explicit loader version; empty means "latest stable".
     loader: []const u8 = "",
+    /// Local installer jar, for when the maven host is unreachable.
+    installer: ?[]const u8 = null,
 };
 
 fn parseInstallFlags(args: []const []const u8) ?InstallFlags {
@@ -342,6 +347,10 @@ fn parseInstallFlags(args: []const []const u8) ?InstallFlags {
             i += 1;
             if (i >= args.len) return null;
             f.loader = args[i];
+        } else if (eq(a, "--installer")) {
+            i += 1;
+            if (i >= args.len) return null;
+            f.installer = args[i];
         } else if (eq(a, "--no-assets")) {
             f.assets = false;
         } else if (eq(a, "--threads")) {
@@ -411,6 +420,7 @@ fn cmdInstall(c: Ctx, args: []const []const u8) u8 {
             cache_dir,
             flags.version,
             if (flags.loader.len != 0) flags.loader else null,
+            flags.installer,
             c.environ,
         ) catch |e| {
             c.err("error: {s} install failed: {s}\n", .{ @tagName(kind), @errorName(e) });

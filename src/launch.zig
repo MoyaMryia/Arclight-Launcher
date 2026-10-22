@@ -107,6 +107,10 @@ pub fn launch(
     // ---- classpath -----------------------------------------------------
     const sep: u8 = if (builtin.os.tag == .windows) ';' else ':';
     var cp: std.ArrayList(u8) = .empty;
+    // A loader's version json re-lists libraries the vanilla json already
+    // pinned (gson, asm, ...). Duplicate classpath entries are useless to the
+    // JVM and fatal to NeoForge's securejarhandler, which keys them by path.
+    var seen: std.StringHashMap(void) = .init(arena);
 
     // oldest first, so a child version wins by being appended later
     var i = chain_len;
@@ -121,6 +125,7 @@ pub fn launch(
                     const p = try std.fmt.allocPrint(arena, "{s}/libraries/{s}", .{
                         opts.game_dir, artifact.path,
                     });
+                    if ((try seen.getOrPut(p)).found_existing) continue;
                     try cp.appendSlice(arena, p);
                     try cp.append(arena, sep);
                     continue;
@@ -132,6 +137,7 @@ pub fn launch(
                 const p = try std.fmt.allocPrint(arena, "{s}/libraries/{s}", .{
                     opts.game_dir, m.rel,
                 });
+                if ((try seen.getOrPut(p)).found_existing) continue;
                 try cp.appendSlice(arena, p);
                 try cp.append(arena, sep);
             }

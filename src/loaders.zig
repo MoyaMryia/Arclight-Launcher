@@ -151,46 +151,71 @@ pub fn install(
     cache_dir: []const u8,
     minecraft: []const u8,
     explicit_version: ?[]const u8,
+    installer_jar: ?[]const u8,
     environ: *const std.process.Environ.Map,
 ) ![]const u8 {
-    const version = if (explicit_version) |v|
-        v
-    else
-        resolve(io, gpa, arena, kind, minecraft) catch |e| {
-            std.debug.print(
-                "error: no {s} build found for {s} ({s})\n" ++
-                    "hint: pass the loader version explicitly, e.g. --loader <version>\n",
-                .{ kind.label(), minecraft, @errorName(e) },
-            );
-            return e;
-        };
+    var version: []const u8 = "";
+    var jar: []const u8 = "";
 
-    const url = try installerUrl(arena, kind, minecraft, version);
-    const jar = try std.fmt.allocPrint(arena, "{s}/{s}-{s}-installer.jar", .{
-        cache_dir, @tagName(kind), version,
-    });
+    if (installer_jar) |local| {
+        // Escape hatch for a blocked maven host: use a jar downloaded by hand.
+        // The loader version still has to be known, so take it from
+        // --loader or from the file name the installer uses.
+        jar = local;
+        version = if (explicit_version) |v|
+            v
+        else
+            versionFromInstallerName(arena, kind, minecraft, std.fs.path.basename(local)) orelse {
+                std.debug.print(
+                    "error: cannot read a {s} version from \"{s}\"\n" ++
+                        "hint: pass it explicitly, e.g. --loader <version>\n",
+                    .{ kind.label(), std.fs.path.basename(local) },
+                );
+                return Error.NoSuchVersion;
+            };
+        std.debug.print("installing {s} {s} for {s} from {s}\n", .{
+            kind.label(), version, minecraft, local,
+        });
+    } else {
+        version = if (explicit_version) |v|
+            v
+        else
+            resolve(io, gpa, arena, kind, minecraft) catch |e| {
+                std.debug.print(
+                    "error: no {s} build found for {s} ({s})\n" ++
+                        "hint: pass the loader version explicitly, e.g. --loader <version>\n",
+                    .{ kind.label(), minecraft, @errorName(e) },
+                );
+                return e;
+            };
 
-    std.debug.print("installing {s} {s} for {s}\n  {s}\n", .{ kind.label(), version, minecraft, url });
+        const url = try installerUrl(arena, kind, minecraft, version);
+        jar = try std.fmt.allocPrint(arena, "{s}/{s}-{s}-installer.jar", .{
+            cache_dir, @tagName(kind), version,
+        });
 
-    var client: http.Client = .{ .allocator = gpa, .io = io };
-    defer client.deinit();
+        std.debug.print("installing {s} {s} for {s}\n  {s}\n", .{ kind.label(), version, minecraft, url });
 
-    // Maven publishes a .sha1 sidecar next to every artifact.
-    var expected: ?[]const u8 = null;
-    if (fetch.request(&client, arena, try std.fmt.allocPrint(arena, "{s}.sha1", .{url}), .{
-        .accept = "text/plain",
-    }) catch null) |res| {
-        if (res.status == 200) {
-            const trimmed = std.mem.trim(u8, res.body, " \r\n\t");
-            if (trimmed.len == 40) expected = trimmed;
+        var client: http.Client = .{ .allocator = gpa, .io = io };
+        defer client.deinit();
+
+        // Maven publishes a .sha1 sidecar next to every artifact.
+        var expected: ?[]const u8 = null;
+        if (fetch.request(&client, arena, try std.fmt.allocPrint(arena, "{s}.sha1", .{url}), .{
+            .accept = "text/plain",
+        }) catch null) |res| {
+            if (res.status == 200) {
+                const trimmed = std.mem.trim(u8, res.body, " \r\n\t");
+                if (trimmed.len == 40) expected = trimmed;
+            }
         }
-    }
 
-    _ = try fetch.get(io, gpa, .{
-        .url = url,
-        .dest = jar,
-        .sha1 = expected,
-    });
+        _ = try fetch.get(io, gpa, .{
+            .url = url,
+            .dest = jar,
+            .sha1 = expected,
+        });
+    }
 
     // The installer refuses to run without a launcher profile file, which the
     // official launcher normally leaves behind.
@@ -292,6 +317,30 @@ fn ensureVersionJar(
 
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = target, .data = bytes });
     std.debug.print("wrote {s}\n", .{target});
+}
+
+/// `forge-1.20.1-47.4.28-installer.jar` -> `47.4.28`
+/// `neoforge-21.1.264-installer.jar`     -> `21.1.264`
+fn versionFromInstallerName(
+    arena: std.mem.Allocator,
+    kind: Kind,
+    minecraft: []const u8,
+    file_name: []const u8,
+) ?[]const u8 {
+    var name = file_name;
+    if (std.mem.indexOf(u8, name, "-installer.jar")) |cut| name = name[0..cut];
+
+    switch (kind) {
+        .forge => {
+            const prefix = std.fmt.allocPrint(arena, "forge-{s}-", .{minecraft}) catch return null;
+            if (!std.mem.startsWith(u8, name, prefix)) return null;
+            return name[prefix.len..];
+        },
+        .neoforge => {
+            if (!std.mem.startsWith(u8, name, "neoforge-")) return null;
+            return name["neoforge-".len..];
+        },
+    }
 }
 
 fn profilesPath(arena: std.mem.Allocator, game_dir: []const u8) ![]const u8 {
