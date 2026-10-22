@@ -333,7 +333,7 @@ pub fn refresh(
         say(
             \\error: the stored session could not be refreshed.
             \\       The refresh token may be bound to a different Client ID,
-            \\       or it may have been revoked. Run `arclight login` again.
+            \\       or it may have been revoked. Run `arclight-launcher login` again.
             \\
         , .{});
         return Error.AuthFailed;

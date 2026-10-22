@@ -4,11 +4,11 @@ A small launcher for **Minecraft: Java Edition**, for the command line, written
 in Zig.
 
 ```
-arclight login              # sign in with your Microsoft account
-arclight install 1.20.1     # fetch that version from Mojang's own servers
-arclight launch 1.20.1      # start it  (--dry-run prints the argv instead)
-arclight java               # show detected Java runtimes
-arclight status --json      # scriptable
+arclight-launcher login              # sign in with your Microsoft account
+arclight-launcher install 1.20.1     # fetch that version from Mojang's own servers
+arclight-launcher launch 1.20.1      # start it  (--dry-run prints the argv instead)
+arclight-launcher java               # show detected Java runtimes
+arclight-launcher status --json      # scriptable
 ```
 
 ## Status
@@ -20,9 +20,9 @@ All commands work: `login`, `install`, `launch`, `versions`, `java`, `status`,
 `install` takes an optional mod loader:
 
 ```
-arclight install 1.20.1 --fabric        # profile json from meta.fabricmc.net
-arclight install 1.20.1 --forge         # runs the official installer
-arclight install 1.21.1 --neoforge      # runs the official installer
+arclight-launcher install 1.20.1 --fabric        # profile json from meta.fabricmc.net
+arclight-launcher install 1.20.1 --forge         # runs the official installer
+arclight-launcher install 1.21.1 --neoforge      # runs the official installer
 ```
 
 ## Requirements
@@ -33,7 +33,7 @@ expected to compile; the version is pinned in `build.zig.zon` on purpose.
 
 **Your own Microsoft Entra application (Client ID).** None is bundled, and none
 is baked into any GUI built on top of this: the allow list entry belongs to
-whoever registered it and can be revoked at any time. Run `arclight login` with
+whoever registered it and can be revoked at any time. Run `arclight-launcher login` with
 no arguments and it prints the six steps. In short: register an application
 with personal Microsoft accounts and public client flows enabled, request
 access for it at <https://aka.ms/mce-reviewappid>, then pass the ID with
@@ -45,7 +45,7 @@ app registration` and exit code `11` — that is the API's answer, not a defect.
 mode, no cracked account support, and no way to point the launcher at a
 different authentication service.
 
-**A Java runtime.** `arclight java` shows what it finds. A missing runtime is
+**A Java runtime.** `arclight-launcher java` shows what it finds. A missing runtime is
 reported as an error; the launcher does not download one.
 
 ## What it downloads, and from where
@@ -103,13 +103,13 @@ Scripts can branch on these.
 | 70 | not implemented yet |
 
 `stdout` carries results and `stderr` carries progress, errors and hints, so
-`arclight status --json | jq` is safe. Token values never appear in either.
+`arclight-launcher status --json | jq` is safe. Token values never appear in either.
 
 ## Building
 
 ```
 zig build -Doptimize=ReleaseSafe
-./zig-out/bin/arclight help
+./zig-out/bin/arclight-launcher help
 ```
 
 Source only: no binaries are published, and the repository ships no release

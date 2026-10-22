@@ -1,4 +1,4 @@
-//! arclight - a minimal Minecraft: Java Edition launcher.
+//! arclight-launcher - a minimal Minecraft: Java Edition launcher.
 //!
 //! Scope is deliberately narrow, see README.md. Anything that would turn this
 //! into a distribution channel for game content is out of scope by design.
@@ -56,10 +56,10 @@ pub const Ctx = struct {
 };
 
 const usage_text =
-    \\arclight - minimal Minecraft: Java Edition launcher
+    \\arclight-launcher - minimal Minecraft: Java Edition launcher
     \\
     \\USAGE:
-    \\    arclight <command> [options]
+    \\    arclight-launcher <command> [options]
     \\
     \\COMMANDS:
     \\    login              Sign in with a Microsoft account (device code flow)
@@ -175,7 +175,7 @@ fn cmdVersion(c: Ctx) u8 {
         c.emitJson(info);
     } else {
         var buf: [256]u8 = undefined;
-        const line = std.fmt.bufPrint(&buf, "arclight {s} (zig {s}, {s})\n", .{
+        const line = std.fmt.bufPrint(&buf, "arclight-launcher {s} (zig {s}, {s})\n", .{
             info.name, info.zig, info.platform,
         }) catch return Exit.ok;
         c.out(line);
@@ -260,7 +260,7 @@ fn cmdJava(c: Ctx) u8 {
         c.err(
             "error: no Java runtime found\n" ++
                 "hint: install a JDK or set JAVA_HOME / ARCLIGHT_JAVA\n" ++
-                "note: arclight never downloads a runtime\n",
+                "note: arclight-launcher never downloads a runtime\n",
             .{},
         );
         if (c.json) c.emitJson(.{ .found = [_][]const u8{}, .count = @as(usize, 0) });
@@ -372,7 +372,7 @@ fn parseInstallFlags(args: []const []const u8) ?InstallFlags {
 
 fn cmdInstall(c: Ctx, args: []const []const u8) u8 {
     const flags = parseInstallFlags(args) orelse {
-        c.err("usage: arclight install <version> [--dir <path>] [--no-assets] [--threads N]\n", .{});
+        c.err("usage: arclight-launcher install <version> [--dir <path>] [--no-assets] [--threads N]\n", .{});
         return Exit.usage;
     };
 
@@ -498,7 +498,7 @@ fn parseLoginFlags(c: Ctx, args: []const []const u8) ?LoginFlags {
 
 fn cmdLogin(c: Ctx, args: []const []const u8) u8 {
     const flags = parseLoginFlags(c, args) orelse {
-        c.err("usage: arclight login [--client-id <guid>]\n", .{});
+        c.err("usage: arclight-launcher login [--client-id <guid>]\n", .{});
         return Exit.usage;
     };
 
@@ -611,7 +611,7 @@ fn parseLaunchFlags(args: []const []const u8) ?LaunchFlags {
 
 fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
     const flags = parseLaunchFlags(args) orelse {
-        c.err("usage: arclight launch <version> [--dir <path>] [--dry-run]\n", .{});
+        c.err("usage: arclight-launcher launch <version> [--dir <path>] [--dry-run]\n", .{});
         return Exit.usage;
     };
 
@@ -639,7 +639,7 @@ fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
         switch (e) {
             launch_mod.Error.VersionNotInstalled => c.err(
                 "error: {s} is not installed in {s}\n" ++
-                    "hint: arclight install {s} --dir {s}\n",
+                    "hint: arclight-launcher install {s} --dir {s}\n",
                 .{ flags.version, game_dir, flags.version, game_dir },
             ),
             launch_mod.Error.ParentNotInstalled => c.err(
@@ -648,7 +648,7 @@ fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
             ),
             launch_mod.Error.NotLoggedIn => c.err(
                 "error: not logged in (or the stored session expired)\n" ++
-                    "hint: arclight login --client-id <guid>\n",
+                    "hint: arclight-launcher login --client-id <guid>\n",
                 .{},
             ),
             launch_mod.Error.NoJava => c.err(
@@ -677,13 +677,13 @@ fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
     return if (outcome.exit_code == 0) Exit.ok else Exit.auth;
 }
 
-/// Neither arclight nor any downstream GUI ships a Client ID, so the very
+/// Neither arclight-launcher nor any downstream GUI ships a Client ID, so the very
 /// first run has to explain how to get one. Keep this copy-pasteable.
 fn printClientIdGuide(c: Ctx, dir: []const u8) void {
     c.err(
         \\No Client ID found.
         \\
-        \\arclight does not ship one, and neither should anything built on it.
+        \\arclight-launcher does not ship one, and neither should anything built on it.
         \\Each user registers their own application. It is free and takes one
         \\visit to the Azure portal plus a wait for approval.
         \\
@@ -702,7 +702,7 @@ fn printClientIdGuide(c: Ctx, dir: []const u8) void {
         \\
         \\Then pass it on the first run:
         \\
-        \\  arclight login --client-id <guid>
+        \\  arclight-launcher login --client-id <guid>
         \\
         \\or set ARCLIGHT_CLIENT_ID, or put the bare ID on one line in:
         \\

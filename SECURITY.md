@@ -33,7 +33,7 @@ can follow through a private channel.
 Please don't publish a reproducer before a fix ships.
 
 If a token may have leaked, revoke it first: signing out of the account in
-`arclight logout`, then changing the Microsoft account password, invalidates the
+`arclight-launcher logout`, then changing the Microsoft account password, invalidates the
 refresh token.
 
 ## Not security issues
