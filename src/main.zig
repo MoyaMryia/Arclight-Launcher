@@ -80,6 +80,7 @@ const usage_text =
     \\    --no-assets        With install: skip assets/objects
     \\    --threads <n>      With install: parallel downloads (default 8)
     \\    --client-id <guid> With login: your own Entra application ID
+    \\                       (also $ARCLIGHT_CLIENT_ID, or a client_id file)
     \\    --loader <ver>     With install: pin the loader build
     \\    --installer <path> With install: use a locally downloaded installer jar
     \\
@@ -510,24 +511,42 @@ fn cmdLogin(c: Ctx, args: []const []const u8) u8 {
         return Exit.config;
     };
 
-    // Client ID resolution order: --client-id, ARCLIGHT_CLIENT_ID, then the one
-    // this account was last signed in with. Refresh tokens are bound to it, so
-    // re-using the stored value is what a re-login after expiry wants.
+    // Client ID resolution order: --client-id, ARCLIGHT_CLIENT_ID, the
+    // client_id file, then the ID this account was last signed in with.
+    // Refresh tokens are bound to it, so re-using the stored value is what a
+    // re-login after expiry wants.
     var client_id = flags.client_id;
+    var source: []const u8 = "--client-id";
+
     if (client_id.len == 0) {
-        if (store.load(c.io, arena, dir) catch null) |acc| {
-            if (acc.client_id.len != 0) client_id = acc.client_id;
+        if (c.environ.get("ARCLIGHT_CLIENT_ID")) |env| {
+            if (env.len != 0) {
+                client_id = env;
+                source = "ARCLIGHT_CLIENT_ID";
+            }
         }
     }
     if (client_id.len == 0) {
-        c.err(
-            "error: no Client ID given and none stored.\n" ++
-                "usage: arclight login --client-id <guid>   (or set ARCLIGHT_CLIENT_ID)\n" ++
-                "no Client ID is bundled: see README.md\n",
-            .{},
-        );
+        if (store.loadClientId(c.io, arena, dir) catch null) |file_id| {
+            client_id = file_id;
+            source = "the client_id file";
+        }
+    }
+    if (client_id.len == 0) {
+        if (store.load(c.io, arena, dir) catch null) |acc| {
+            if (acc.client_id.len != 0) {
+                client_id = acc.client_id;
+                source = "the stored account";
+            }
+        }
+    }
+
+    if (client_id.len == 0) {
+        printClientIdGuide(c, dir);
         return Exit.usage;
     }
+
+    if (!c.json) c.err("using Client ID from {s}\n", .{source});
 
     const result = auth.login(c.io, c.gpa, arena, .{ .client_id = client_id }) catch |e| {
         if (!c.json) c.err("\n", .{});
@@ -656,4 +675,45 @@ fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
         return Exit.ok;
     }
     return if (outcome.exit_code == 0) Exit.ok else Exit.auth;
+}
+
+/// Neither arclight nor any downstream GUI ships a Client ID, so the very
+/// first run has to explain how to get one. Keep this copy-pasteable.
+fn printClientIdGuide(c: Ctx, dir: []const u8) void {
+    c.err(
+        \\No Client ID found.
+        \\
+        \\arclight does not ship one, and neither should anything built on it.
+        \\Each user registers their own application. It is free and takes one
+        \\visit to the Azure portal plus a wait for approval.
+        \\
+        \\  1. https://portal.azure.com -> Microsoft Entra ID -> App registrations
+        \\     -> New registration.
+        \\  2. Name: anything without "Minecraft", "Mojang", "Microsoft",
+        \\     "Xbox", "Live", "Discord" or "Hypixel" in it.
+        \\     Supported account types: "Personal Microsoft accounts only".
+        \\     Redirect URI: platform "Mobile and desktop applications",
+        \\     value http://localhost
+        \\  3. Authentication -> Allow public client flows: Yes -> Save.
+        \\  4. Manifest -> "accessTokenAcceptedVersion": 2
+        \\  5. Overview -> copy the Application (client) ID.
+        \\  6. Request access for that ID at https://aka.ms/mce-reviewappid
+        \\     and wait. Without it, sign-in fails with HTTP 403 and exit 11.
+        \\
+        \\Then pass it on the first run:
+        \\
+        \\  arclight login --client-id <guid>
+        \\
+        \\or set ARCLIGHT_CLIENT_ID, or put the bare ID on one line in:
+        \\
+    , .{});
+    var buf: [512]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "  {s}/client_id\n", .{dir}) catch "";
+    c.err("{s}", .{line});
+    c.err(
+        \\
+        \\Do not hand out a personal Client ID: the allow list entry belongs to
+        \\whoever registered it, and it can be revoked at any time.
+        \\
+    , .{});
 }

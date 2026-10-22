@@ -99,6 +99,20 @@ pub fn save(io: Io, dir: []const u8, acc: Account) !void {
     });
 }
 
+/// Single-line file holding the Client ID. This is the delivery mechanism for
+/// "here, use this build": no ID is ever compiled in, and handing someone a
+/// file is reversible in a way that shipping a binary is not.
+pub fn loadClientId(io: Io, arena: std.mem.Allocator, dir: []const u8) !?[]const u8 {
+    const path = try std.fs.path.join(arena, &.{ dir, "client_id" });
+    const raw = Io.Dir.cwd().readFileAlloc(io, path, arena, Io.Limit.limited(4096)) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    return trimmed;
+}
+
 pub fn clear(io: Io, arena: std.mem.Allocator, dir: []const u8) !void {
     const path = try accountPath(arena, dir);
     Io.Dir.deleteFileAbsolute(io, path) catch |err| switch (err) {

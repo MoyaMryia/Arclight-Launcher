@@ -31,11 +31,15 @@ arclight install 1.21.1 --neoforge      # runs the official installer
 and changes its standard library between releases, so other versions are not
 expected to compile; the version is pinned in `build.zig.zon` on purpose.
 
-**Your own Microsoft Entra application (Client ID).** None is bundled. You
-register one (personal Microsoft accounts, public client flows enabled) and
-request access for it at <https://aka.ms/mce-reviewappid>. Until it is
-approved, signing in fails with `HTTP 403 Invalid app registration` and exit
-code `11` — that is the API's answer, not a defect in this program.
+**Your own Microsoft Entra application (Client ID).** None is bundled, and none
+is baked into any GUI built on top of this: the allow list entry belongs to
+whoever registered it and can be revoked at any time. Run `arclight login` with
+no arguments and it prints the six steps. In short: register an application
+with personal Microsoft accounts and public client flows enabled, request
+access for it at <https://aka.ms/mce-reviewappid>, then pass the ID with
+`--client-id`, `$ARCLIGHT_CLIENT_ID`, or a one-line `client_id` file in the
+config directory. Until it is approved, signing in fails with `HTTP 403 Invalid
+app registration` and exit code `11` — that is the API's answer, not a defect.
 
 **A Microsoft account that owns Minecraft: Java Edition.** There is no offline
 mode, no cracked account support, and no way to point the launcher at a
