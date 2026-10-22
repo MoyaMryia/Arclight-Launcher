@@ -13,6 +13,7 @@ const install_mod = @import("install.zig");
 const auth = @import("auth.zig");
 const launch_mod = @import("launch.zig");
 const fabric = @import("fabric.zig");
+const loaders = @import("loaders.zig");
 
 /// Exit codes are part of the interface: scripts branch on them.
 pub const Exit = struct {
@@ -316,6 +317,8 @@ const InstallFlags = struct {
     threads: usize = 8,
     /// Install Fabric instead of the bare version.
     fabric: bool = false,
+    /// Install Forge / NeoForge by running their installer.
+    loader_kind: ?loaders.Kind = null,
     /// Explicit loader version; empty means "latest stable".
     loader: []const u8 = "",
 };
@@ -331,6 +334,10 @@ fn parseInstallFlags(args: []const []const u8) ?InstallFlags {
             f.dir = args[i];
         } else if (eq(a, "--fabric")) {
             f.fabric = true;
+        } else if (eq(a, "--forge")) {
+            f.loader_kind = .forge;
+        } else if (eq(a, "--neoforge")) {
+            f.loader_kind = .neoforge;
         } else if (eq(a, "--loader")) {
             i += 1;
             if (i >= args.len) return null;
@@ -394,6 +401,27 @@ fn cmdInstall(c: Ctx, args: []const []const u8) u8 {
     };
 
     var loader_id: ?[]const u8 = null;
+    if (flags.loader_kind) |kind| {
+        loader_id = loaders.install(
+            c.io,
+            c.gpa,
+            arena,
+            kind,
+            game_dir,
+            cache_dir,
+            flags.version,
+            if (flags.loader.len != 0) flags.loader else null,
+            c.environ,
+        ) catch |e| {
+            c.err("error: {s} install failed: {s}\n", .{ @tagName(kind), @errorName(e) });
+            return switch (e) {
+                loaders.Error.JavaMissing => Exit.java_missing,
+                loaders.Error.NoSuchVersion => Exit.usage,
+                else => Exit.download,
+            };
+        };
+        if (!c.json) c.err("{s} installed as: {s}\n", .{ @tagName(kind), loader_id.? });
+    }
     if (flags.fabric) {
         const loader = if (flags.loader.len != 0) flags.loader else fabric.resolveLoader(
             c.io,
