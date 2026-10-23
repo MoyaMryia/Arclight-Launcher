@@ -7,43 +7,60 @@ in Zig.
 arclight-launcher login              # sign in with your Microsoft account
 arclight-launcher install 1.20.1     # fetch that version from Mojang's own servers
 arclight-launcher launch 1.20.1      # start it  (--dry-run prints the argv instead)
+arclight-launcher instance list      # structured instance records
 arclight-launcher java               # show detected Java runtimes
 arclight-launcher status --json      # scriptable
 ```
 
 ## Status
 
-All commands work: `login`, `install`, `launch`, `versions`, `java`, `status`,
-`logout`. `launch` refreshes the stored session before starting the game, and
-`launch --dry-run` prints the exact argv without running it.
+All commands work: `login`, `install`, `launch`, `versions`, `instance`,
+`instances`, `java`, `status`, `logout`. `launch` refreshes the stored session
+before starting the game, and `launch --dry-run` prints the exact argv without
+running it.
 
-Instances: `--instance <name>` runs the game in `<dir>/instances/<name>`, so
-saves, mods, config and logs stay separate while `versions/`, `libraries/` and
-`assets/` are shared by every instance. `arclight instances` lists them, with the
-version each one runs. Without `--instance` the game runs directly in `<dir>`,
-which is what a single install wants.
+Instances: `--instance <id>` runs the game in `<dir>/instances/<id>`, so saves,
+mods, config and logs stay separate while `versions/`, `libraries/` and
+`assets/` are shared by every instance. Without `--instance` the game runs
+directly in `<dir>`, which is what a single install wants.
 
-The first `launch <version> --instance <name>` writes
-`instances/<name>/instance.json`, and later launches only need the name:
+`instance list` is the structured interface. `instances` remains as a legacy
+text list.
 
 ```
-arclight launch 1.16.5 --instance survival   # records the version
-arclight launch --instance survival          # from then on
+arclight-launcher instance list --json
+arclight-launcher instance create survival --version 1.16.5 --name "Survival"
+arclight-launcher instance show survival --json
+arclight-launcher instance set survival --max-memory 4096 --jvm-arg -XX:+UseG1GC
+arclight-launcher instance set survival --version 1.20.1
+arclight-launcher instance remove survival             # move to .trash
+arclight-launcher instance restore survival            # newest trashed copy
+arclight-launcher instance remove survival --permanent # delete instead
 ```
 
-That file is also where per-instance runtime settings live, and nothing else in
-this project is per-instance:
+The directory name is the stable instance id. `name` is display-only:
 
 ```json
 {
+  "schema_version": 1,
+  "name": "Survival",
   "version": "1.16.5",
-  "java": "/path/to/java",
-  "jvm_args": ["-Xmx4G", "-XX:+UseG1GC"]
+  "java": null,
+  "min_memory_mb": 1024,
+  "max_memory_mb": 4096,
+  "jvm_args": ["-XX:+UseG1GC"]
 }
 ```
 
-`java` overrides JAVA_HOME/PATH for this instance; `jvm_args` are appended after
-the arguments the version JSON asks for. Both are optional.
+`java` overrides JAVA_HOME/PATH for this instance. `min_memory_mb` and
+`max_memory_mb` become `-Xms` / `-Xmx` before the extra JVM arguments.
+`jvm_args` are appended after the arguments the version JSON asks for. On
+`instance set`, passing `--jvm-arg` replaces the whole list; use
+`--clear-jvm-args` to remove it. All fields are optional.
+
+`instance remove` moves the directory to
+`<dir>/.trash/instances/<id>/<timestamp>`; `instance restore <id>` puts the
+newest copy back. `--permanent` deletes it without a trash copy.
 
 `install` takes an optional mod loader:
 
@@ -59,9 +76,9 @@ arclight-launcher install 1.21.1 --neoforge      # runs the official installer
 and changes its standard library between releases, so other versions are not
 expected to compile; the version is pinned in `build.zig.zon` on purpose.
 
-**Your own Microsoft Entra application (Client ID).** None is bundled, and none
-is baked into any GUI built on top of this: the allow list entry belongs to
-whoever registered it and can be revoked at any time. Run `arclight-launcher login` with
+**Your own Microsoft Entra application (Client ID).** None is bundled or built
+into the launcher: the allow list entry belongs to whoever registered it and
+can be revoked at any time. Run `arclight-launcher login` with
 no arguments and it prints the six steps. In short: register an application
 with personal Microsoft accounts and public client flows enabled, request
 access for it at <https://aka.ms/mce-reviewappid>, then pass the ID with
@@ -127,8 +144,9 @@ Scripts can branch on these.
 | 11 | Client ID not authorized by Minecraft Services (HTTP 403) |
 | 12 | account does not own the game |
 | 20 | download failed |
+| 21 | required files missing |
 | 30 | no Java runtime found |
-| 70 | not implemented yet |
+| 40 | the game exited with a non-zero status |
 
 `stdout` carries results and `stderr` carries progress, errors and hints, so
 `arclight-launcher status --json | jq` is safe. Token values never appear in either.

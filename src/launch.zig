@@ -34,6 +34,9 @@ pub const Options = struct {
     java_exe: ?[]const u8 = null,
     /// Extra JVM arguments, from the instance record.
     extra_jvm: []const []const u8 = &.{},
+    /// Instance memory settings, translated to -Xms / -Xmx.
+    min_memory_mb: ?u32 = null,
+    max_memory_mb: ?u32 = null,
     version: []const u8,
     /// Print the command line instead of running it.
     dry_run: bool = false,
@@ -290,6 +293,12 @@ pub fn launch(
         }
     }
 
+    if (opts.min_memory_mb) |mb| {
+        try argv.append(arena, try std.fmt.allocPrint(arena, "-Xms{d}m", .{mb}));
+    }
+    if (opts.max_memory_mb) |mb| {
+        try argv.append(arena, try std.fmt.allocPrint(arena, "-Xmx{d}m", .{mb}));
+    }
     for (opts.extra_jvm) |a| try argv.append(arena, a);
 
     try argv.append(arena, main_class);

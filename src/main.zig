@@ -7,6 +7,7 @@ const std = @import("std");
 const Io = std.Io;
 
 const store = @import("store.zig");
+const instance_mod = @import("instance.zig");
 const java = @import("java.zig");
 const meta = @import("meta.zig");
 const install_mod = @import("install.zig");
@@ -68,7 +69,8 @@ const usage_text =
     \\COMMANDS:
     \\    login              Sign in with a Microsoft account (device code flow)
     \\    versions           List Minecraft versions from Mojang's manifest
-    \\    instances          List instance directories under <dir>/instances
+    \\    instances          List instance directories (legacy text format)
+    \\    instance           Show, create, edit, remove, or restore an instance
     \\    install <version>  Fetch a version, its libraries and assets
     \\                       --fabric | --forge | --neoforge add a mod loader
     \\    launch <version>   Start an installed version (--instance <name> to isolate)
@@ -153,6 +155,7 @@ fn dispatch(c: Ctx, cmd: []const u8, args: []const []const u8) u8 {
     if (eq(cmd, "java")) return cmdJava(c);
     if (eq(cmd, "versions")) return cmdVersions(c, args);
     if (eq(cmd, "instances")) return cmdInstances(c, args);
+    if (eq(cmd, "instance")) return cmdInstance(c, args);
     if (eq(cmd, "logout")) return cmdLogout(c);
     if (eq(cmd, "login")) return cmdLogin(c, args);
     if (eq(cmd, "install")) return cmdInstall(c, args);
@@ -285,7 +288,6 @@ fn cmdJava(c: Ctx) u8 {
     }
     return Exit.ok;
 }
-
 
 const VersionFlags = struct {
     from: ?[]const u8 = null,
@@ -699,10 +701,10 @@ fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
     var run_dir = game_dir;
     var instance_record: ?store.Instance = null;
     if (flags.instance) |name| {
-        if (name.len == 0 or std.mem.indexOfAny(u8, name, "/\\") != null) {
-            c.err("error: instance name must not contain a path separator\n", .{});
+        instance_mod.validateId(name) catch |e| {
+            c.err("error: invalid instance id: {s}\n", .{@errorName(e)});
             return Exit.usage;
-        }
+        };
         run_dir = std.fs.path.join(arena, &.{ game_dir, "instances", name }) catch return Exit.config;
         Io.Dir.cwd().createDirPath(c.io, run_dir) catch |e| {
             c.err("error: cannot create instance directory: {s}\n", .{@errorName(e)});
@@ -718,33 +720,54 @@ fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
                 Io.Dir.cwd().symLink(c.io, shared_resources, instance_resources, .{ .is_directory = true }) catch {};
             } else |_| {}
         }
-        instance_record = store.loadInstance(c.io, arena, run_dir) catch null;
+        instance_record = store.loadInstance(c.io, arena, run_dir) catch |e| {
+            c.err("error: cannot read instance.json: {s}\n", .{@errorName(e)});
+            return Exit.config;
+        };
         if (!c.json) c.err("instance: {s}\n", .{run_dir});
     }
 
     // `launch --instance <name>` reads the version from the instance record, so
     // a configured instance needs no other arguments.
     var version = flags.version;
-    if (version.len == 0) {
-        const rec = instance_record orelse {
+    if (flags.instance) |name| {
+        if (instance_record) |rec| {
+            if (version.len == 0) {
+                if (rec.version.len == 0) {
+                    c.err(
+                        "error: instance.json has no \"version\"\n" ++
+                            "hint: arclight-launcher instance set {s} --version <version>\n",
+                        .{name},
+                    );
+                    return Exit.config;
+                }
+                version = rec.version;
+            } else if (!std.mem.eql(u8, rec.version, version)) {
+                c.err(
+                    "error: instance {s} is recorded as {s}, not {s}\n" ++
+                        "hint: arclight-launcher instance set {s} --version {s}\n",
+                    .{ name, rec.version, version, name, version },
+                );
+                return Exit.usage;
+            }
+        } else if (version.len == 0) {
             c.err(
                 "error: no instance.json in {s}\n" ++
-                    "hint: launch once with a version to record it:\n" ++
-                    "      arclight-launcher launch <version> --instance {s}\n",
-                .{ run_dir, flags.instance.? },
+                    "hint: create it first:\n" ++
+                    "      arclight-launcher instance create {s} --version <version>\n",
+                .{ run_dir, name },
             );
             return Exit.usage;
-        };
-        if (rec.version.len == 0) {
-            c.err("error: instance.json has no \"version\"\n", .{});
-            return Exit.config;
+        } else {
+            // First launch of this instance: remember what it runs.
+            store.saveInstance(c.io, run_dir, .{
+                .schema_version = 1,
+                .name = name,
+                .version = version,
+            }) catch |e| {
+                c.err("warning: cannot write instance.json: {s}\n", .{@errorName(e)});
+            };
         }
-        version = rec.version;
-    } else if (flags.instance != null and instance_record == null) {
-        // First launch of this instance: remember what it runs.
-        store.saveInstance(c.io, run_dir, .{ .version = version }) catch |e| {
-            c.err("warning: cannot write instance.json: {s}\n", .{@errorName(e)});
-        };
     }
 
     // Preflight before any network work: fail fast, and tell the user exactly
@@ -810,11 +833,20 @@ fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
         account = store.load(c.io, arena, dir) catch null;
     } else |_| {}
 
+    if (instance_record) |rec| {
+        instance_mod.validateMemory(rec.min_memory_mb, rec.max_memory_mb) catch |e| {
+            c.err("error: invalid memory in instance.json: {s}\n", .{@errorName(e)});
+            return Exit.config;
+        };
+    }
+
     const outcome = launch_mod.launch(c.io, c.gpa, arena, .{
         .game_dir = game_dir,
         .run_dir = run_dir,
         .java_exe = if (instance_record) |r| r.java else null,
         .extra_jvm = if (instance_record) |r| r.jvm_args else &.{},
+        .min_memory_mb = if (instance_record) |r| r.min_memory_mb else null,
+        .max_memory_mb = if (instance_record) |r| r.max_memory_mb else null,
         .version = version,
         .dry_run = flags.dry_run,
         .environ = c.environ,
@@ -823,7 +855,7 @@ fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
             launch_mod.Error.VersionNotInstalled => c.err(
                 "error: {s} is not installed in {s}\n" ++
                     "hint: arclight-launcher install {s} --dir {s}\n",
-                .{ flags.version, game_dir, flags.version, game_dir },
+                .{ version, game_dir, version, game_dir },
             ),
             launch_mod.Error.ParentNotInstalled => c.err(
                 "error: this version inherits from another one that is not installed\n",
@@ -866,8 +898,8 @@ fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
     return Exit.ok;
 }
 
-/// Neither arclight-launcher nor any downstream GUI ships a Client ID, so the very
-/// first run has to explain how to get one. Keep this copy-pasteable.
+/// arclight-launcher does not ship a Client ID, so the very first run has to
+/// explain how to get one. Keep this copy-pasteable.
 fn printClientIdGuide(c: Ctx, dir: []const u8) void {
     c.err(
         \\No Client ID found.
@@ -1002,6 +1034,597 @@ fn cmdInstances(c: Ctx, args: []const []const u8) u8 {
             c.out(name);
             c.out("\n");
         }
+    }
+    return Exit.ok;
+}
+
+// ---------------------------------------------------------------- instance
+
+const instance_usage_text =
+    \\arclight-launcher instance <command> [options]
+    \\
+    \\COMMANDS:
+    \\    list                         List instance records
+    \\    show <id>                    Show one instance
+    \\    create <id> --version <ver>  Create an instance directory and record
+    \\    set <id>                     Edit an instance record
+    \\    remove <id>                  Move the directory to .trash, or delete it
+    \\    restore <id>                 Restore the newest trashed instance
+    \\
+    \\OPTIONS:
+    \\    --dir <path>                 Game directory (default ~/.minecraft)
+    \\    --json                       Structured output
+    \\    --name <name>                Display name (defaults to the id)
+    \\    --version <version>          Installed version profile
+    \\    --java <path>                Instance Java runtime
+    \\    --min-memory <mb>            Minimum heap (-Xms)
+    \\    --max-memory <mb>            Maximum heap (-Xmx)
+    \\    --jvm-arg <arg>              Extra JVM argument; may be repeated
+    \\    --clear-java                 Remove the instance Java path
+    \\    --clear-memory               Remove both heap settings
+    \\    --clear-jvm-args             Remove all extra JVM arguments
+    \\    --permanent                  With remove: delete instead of trashing
+    \\
+;
+
+const InstanceArgs = struct {
+    id: []const u8 = "",
+    dir: ?[]const u8 = null,
+    name: ?[]const u8 = null,
+    version: ?[]const u8 = null,
+    java: ?[]const u8 = null,
+    min_memory: ?u32 = null,
+    max_memory: ?u32 = null,
+    jvm_args: std.ArrayList([]const u8) = .empty,
+    clear_java: bool = false,
+    clear_memory: bool = false,
+    clear_jvm_args: bool = false,
+    permanent: bool = false,
+};
+
+const InstanceView = struct {
+    id: []const u8,
+    name: []const u8,
+    version: []const u8,
+    java: ?[]const u8,
+    min_memory_mb: ?u32,
+    max_memory_mb: ?u32,
+    jvm_args: []const []const u8,
+    path: []const u8,
+    has_record: bool,
+    invalid: bool,
+    error_name: []const u8,
+    schema_version: u32,
+};
+
+fn cmdInstance(c: Ctx, args: []const []const u8) u8 {
+    if (args.len == 0 or eq(args[0], "help")) {
+        c.out(instance_usage_text);
+        return Exit.ok;
+    }
+    const sub = args[0];
+    const rest = args[1..];
+    if (eq(sub, "list")) return cmdInstanceList(c, rest);
+    if (eq(sub, "show")) return cmdInstanceShow(c, rest);
+    if (eq(sub, "create")) return cmdInstanceCreate(c, rest);
+    if (eq(sub, "set")) return cmdInstanceSet(c, rest);
+    if (eq(sub, "remove")) return cmdInstanceRemove(c, rest);
+    if (eq(sub, "restore")) return cmdInstanceRestore(c, rest);
+
+    c.err("error: unknown instance command '{s}'\n", .{sub});
+    c.err("{s}", .{instance_usage_text});
+    return Exit.usage;
+}
+
+fn parseInstanceArgs(
+    c: Ctx,
+    args: []const []const u8,
+    need_id: bool,
+) ?InstanceArgs {
+    var out: InstanceArgs = .{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        if (eq(a, "--dir")) {
+            i += 1;
+            if (i >= args.len) return null;
+            out.dir = args[i];
+        } else if (std.mem.startsWith(u8, a, "--dir=")) {
+            out.dir = a["--dir=".len..];
+        } else if (eq(a, "--name")) {
+            i += 1;
+            if (i >= args.len) return null;
+            out.name = args[i];
+        } else if (std.mem.startsWith(u8, a, "--name=")) {
+            out.name = a["--name=".len..];
+        } else if (eq(a, "--version")) {
+            i += 1;
+            if (i >= args.len) return null;
+            out.version = args[i];
+        } else if (std.mem.startsWith(u8, a, "--version=")) {
+            out.version = a["--version=".len..];
+        } else if (eq(a, "--java")) {
+            i += 1;
+            if (i >= args.len) return null;
+            out.java = args[i];
+        } else if (std.mem.startsWith(u8, a, "--java=")) {
+            out.java = a["--java=".len..];
+        } else if (eq(a, "--min-memory")) {
+            i += 1;
+            if (i >= args.len) return null;
+            out.min_memory = std.fmt.parseInt(u32, args[i], 10) catch return null;
+        } else if (std.mem.startsWith(u8, a, "--min-memory=")) {
+            out.min_memory = std.fmt.parseInt(u32, a["--min-memory=".len..], 10) catch return null;
+        } else if (eq(a, "--max-memory")) {
+            i += 1;
+            if (i >= args.len) return null;
+            out.max_memory = std.fmt.parseInt(u32, args[i], 10) catch return null;
+        } else if (std.mem.startsWith(u8, a, "--max-memory=")) {
+            out.max_memory = std.fmt.parseInt(u32, a["--max-memory=".len..], 10) catch return null;
+        } else if (eq(a, "--jvm-arg")) {
+            i += 1;
+            if (i >= args.len or args[i].len == 0) return null;
+            out.jvm_args.append(c.arena, args[i]) catch return null;
+        } else if (std.mem.startsWith(u8, a, "--jvm-arg=")) {
+            const value = a["--jvm-arg=".len..];
+            if (value.len == 0) return null;
+            out.jvm_args.append(c.arena, value) catch return null;
+        } else if (eq(a, "--clear-java")) {
+            out.clear_java = true;
+        } else if (eq(a, "--clear-memory")) {
+            out.clear_memory = true;
+        } else if (eq(a, "--clear-jvm-args")) {
+            out.clear_jvm_args = true;
+        } else if (eq(a, "--permanent")) {
+            out.permanent = true;
+        } else if (a.len != 0 and a[0] == '-') {
+            return null;
+        } else if (need_id and out.id.len == 0) {
+            out.id = a;
+        } else {
+            return null;
+        }
+    }
+    if (need_id and out.id.len == 0) return null;
+    return out;
+}
+
+fn instanceGameDir(c: Ctx, arg: ?[]const u8) ?[]const u8 {
+    if (arg) |value| return value;
+    const home = c.environ.get("HOME") orelse {
+        c.err("error: --dir is required when HOME is unset\n", .{});
+        return null;
+    };
+    return std.fs.path.join(c.arena, &.{ home, ".minecraft" }) catch {
+        c.err("error: cannot resolve the game directory\n", .{});
+        return null;
+    };
+}
+
+fn instanceError(c: Ctx, err: anyerror) u8 {
+    switch (err) {
+        error.InvalidId => c.err("error: invalid instance id (empty, dot, path separator, control character, or too long)\n", .{}),
+        error.InvalidName => c.err("error: invalid display name (empty, control character, or too long)\n", .{}),
+        error.InvalidVersion => c.err("error: invalid version id (empty, dot, path separator, control character, or too long)\n", .{}),
+        error.InvalidMemory => c.err("error: memory values must be positive and min must not exceed max\n", .{}),
+        error.InstanceExists => c.err("error: instance already exists\n", .{}),
+        error.InstanceNotFound => c.err("error: instance not found\n", .{}),
+        error.NoInstanceRecord => c.err("error: instance has no instance.json\n", .{}),
+        error.RestoreTargetExists => c.err("error: an instance with that id already exists\n", .{}),
+        error.TrashNotFound => c.err("error: no trashed copy for that instance\n", .{}),
+        error.VersionNotInstalled => c.err("error: version is not installed\n", .{}),
+        error.CorruptInstanceFile => c.err("error: instance.json is corrupt\n", .{}),
+        error.UnsupportedInstanceSchema => c.err("error: instance.json schema is newer than this launcher\n", .{}),
+        else => c.err("error: {s}\n", .{@errorName(err)}),
+    }
+    return switch (err) {
+        error.InvalidId,
+        error.InvalidName,
+        error.InvalidVersion,
+        error.InvalidMemory,
+        error.InstanceExists,
+        error.InstanceNotFound,
+        error.NoInstanceRecord,
+        error.RestoreTargetExists,
+        error.TrashNotFound,
+        => Exit.usage,
+        error.VersionNotInstalled => Exit.missing_files,
+        else => Exit.config,
+    };
+}
+
+fn viewOf(entry: instance_mod.Entry) InstanceView {
+    if (entry.record) |record| {
+        return .{
+            .id = entry.id,
+            .name = instance_mod.effectiveName(entry.id, record),
+            .version = record.version,
+            .java = record.java,
+            .min_memory_mb = record.min_memory_mb,
+            .max_memory_mb = record.max_memory_mb,
+            .jvm_args = record.jvm_args,
+            .path = entry.path,
+            .has_record = true,
+            .invalid = false,
+            .error_name = "",
+            .schema_version = record.schema_version,
+        };
+    }
+    if (entry.load_error) |message| {
+        return .{
+            .id = entry.id,
+            .name = entry.id,
+            .version = "",
+            .java = null,
+            .min_memory_mb = null,
+            .max_memory_mb = null,
+            .jvm_args = &.{},
+            .path = entry.path,
+            .has_record = true,
+            .invalid = true,
+            .error_name = message,
+            .schema_version = 0,
+        };
+    }
+    return .{
+        .id = entry.id,
+        .name = entry.id,
+        .version = "",
+        .java = null,
+        .min_memory_mb = null,
+        .max_memory_mb = null,
+        .jvm_args = &.{},
+        .path = entry.path,
+        .has_record = false,
+        .invalid = false,
+        .error_name = "",
+        .schema_version = 0,
+    };
+}
+
+fn printInstance(c: Ctx, view: InstanceView) void {
+    c.out(view.id);
+    c.out("\n");
+    c.out("  name     ");
+    c.out(view.name);
+    c.out("\n");
+    c.out("  version  ");
+    c.out(if (view.version.len == 0) "(none)" else view.version);
+    c.out("\n");
+    c.out("  java     ");
+    c.out(if (view.java) |value| value else "(auto)");
+    c.out("\n");
+    c.out("  memory   ");
+    if (view.min_memory_mb == null and view.max_memory_mb == null) {
+        c.out("auto");
+    } else {
+        var buf: [96]u8 = undefined;
+        const text = std.fmt.bufPrint(&buf, "min={?d} max={?d}", .{
+            view.min_memory_mb,
+            view.max_memory_mb,
+        }) catch "";
+        c.out(text);
+    }
+    c.out("\n");
+    c.out("  jvm_args ");
+    for (view.jvm_args, 0..) |arg, i| {
+        if (i != 0) c.out(" ");
+        c.out(arg);
+    }
+    c.out("\n");
+    c.out("  path     ");
+    c.out(view.path);
+    c.out("\n");
+    if (view.invalid) {
+        c.out("  invalid  ");
+        c.out(view.error_name);
+        c.out("\n");
+    } else if (!view.has_record) {
+        c.out("  record   missing\n");
+    }
+}
+
+fn cmdInstanceList(c: Ctx, args: []const []const u8) u8 {
+    const parsed = parseInstanceArgs(c, args, false) orelse {
+        c.err("usage: arclight-launcher instance list [--dir <path>] [--json]\n", .{});
+        return Exit.usage;
+    };
+    if (parsed.name != null or parsed.version != null or parsed.java != null or parsed.min_memory != null or parsed.max_memory != null or parsed.jvm_args.items.len != 0 or parsed.clear_java or parsed.clear_memory or parsed.clear_jvm_args or parsed.permanent) {
+        c.err("error: list takes only --dir\n", .{});
+        return Exit.usage;
+    }
+    const game_dir = instanceGameDir(c, parsed.dir) orelse return Exit.usage;
+    const root = instance_mod.root(c.arena, game_dir) catch return Exit.config;
+    const entries = instance_mod.list(c.io, c.arena, game_dir) catch |err| return instanceError(c, err);
+
+    var views: std.ArrayList(InstanceView) = .empty;
+    for (entries) |entry| {
+        views.append(c.arena, viewOf(entry)) catch return Exit.config;
+    }
+
+    if (c.json) {
+        c.emitJson(.{ .root = root, .instances = views.items });
+    } else if (views.items.len == 0) {
+        c.out("no instances yet\n");
+        c.out("create one with: instance create <id> --version <version>\n");
+    } else {
+        for (views.items) |view| {
+            c.out(view.id);
+            c.out("\t");
+            c.out(view.name);
+            c.out("\t");
+            c.out(if (view.version.len == 0) "(none)" else view.version);
+            if (view.invalid) {
+                c.out("\tinvalid: ");
+                c.out(view.error_name);
+            } else if (!view.has_record) {
+                c.out("\tno instance.json");
+            }
+            c.out("\n");
+        }
+    }
+    return Exit.ok;
+}
+
+fn cmdInstanceShow(c: Ctx, args: []const []const u8) u8 {
+    const parsed = parseInstanceArgs(c, args, true) orelse {
+        c.err("usage: arclight-launcher instance show <id> [--dir <path>] [--json]\n", .{});
+        return Exit.usage;
+    };
+    if (parsed.name != null or parsed.version != null or parsed.java != null or parsed.min_memory != null or parsed.max_memory != null or parsed.jvm_args.items.len != 0 or parsed.clear_java or parsed.clear_memory or parsed.clear_jvm_args or parsed.permanent) {
+        c.err("error: show takes only <id> and --dir\n", .{});
+        return Exit.usage;
+    }
+    const game_dir = instanceGameDir(c, parsed.dir) orelse return Exit.usage;
+    const record = instance_mod.loadRequired(c.io, c.arena, game_dir, parsed.id) catch |err| {
+        return instanceError(c, err);
+    };
+    const path = instance_mod.dir(c.arena, game_dir, parsed.id) catch return Exit.config;
+    const view: InstanceView = .{
+        .id = parsed.id,
+        .name = instance_mod.effectiveName(parsed.id, record),
+        .version = record.version,
+        .java = record.java,
+        .min_memory_mb = record.min_memory_mb,
+        .max_memory_mb = record.max_memory_mb,
+        .jvm_args = record.jvm_args,
+        .path = path,
+        .has_record = true,
+        .invalid = false,
+        .error_name = "",
+        .schema_version = record.schema_version,
+    };
+    if (c.json) c.emitJson(view) else printInstance(c, view);
+    return Exit.ok;
+}
+
+fn cmdInstanceCreate(c: Ctx, args: []const []const u8) u8 {
+    const parsed = parseInstanceArgs(c, args, true) orelse {
+        c.err("usage: arclight-launcher instance create <id> --version <version> [options]\n", .{});
+        return Exit.usage;
+    };
+    if (parsed.clear_java or parsed.clear_memory or parsed.clear_jvm_args or parsed.permanent) {
+        c.err("error: create does not take clear/permanent options\n", .{});
+        return Exit.usage;
+    }
+    const version = parsed.version orelse {
+        c.err("error: --version is required\n", .{});
+        return Exit.usage;
+    };
+    const game_dir = instanceGameDir(c, parsed.dir) orelse return Exit.usage;
+    const name = parsed.name orelse parsed.id;
+    const java_path = if (parsed.java) |value| (if (value.len == 0) null else value) else null;
+    const record = instance_mod.create(
+        c.io,
+        c.arena,
+        game_dir,
+        parsed.id,
+        name,
+        version,
+        java_path,
+        parsed.min_memory,
+        parsed.max_memory,
+        parsed.jvm_args.items,
+    ) catch |err| {
+        if (err == error.VersionNotInstalled) {
+            c.err("error: version '{s}' is not installed\n", .{version});
+            c.err("hint: arclight-launcher install {s}\n", .{version});
+            return Exit.missing_files;
+        }
+        return instanceError(c, err);
+    };
+    const path = instance_mod.dir(c.arena, game_dir, parsed.id) catch return Exit.config;
+    const view: InstanceView = .{
+        .id = parsed.id,
+        .name = instance_mod.effectiveName(parsed.id, record),
+        .version = record.version,
+        .java = record.java,
+        .min_memory_mb = record.min_memory_mb,
+        .max_memory_mb = record.max_memory_mb,
+        .jvm_args = record.jvm_args,
+        .path = path,
+        .has_record = true,
+        .invalid = false,
+        .error_name = "",
+        .schema_version = record.schema_version,
+    };
+    if (c.json) c.emitJson(view) else {
+        c.out("created instance ");
+        c.out(parsed.id);
+        c.out("\n");
+        printInstance(c, view);
+    }
+    return Exit.ok;
+}
+
+fn cmdInstanceSet(c: Ctx, args: []const []const u8) u8 {
+    const parsed = parseInstanceArgs(c, args, true) orelse {
+        c.err("usage: arclight-launcher instance set <id> [options]\n", .{});
+        return Exit.usage;
+    };
+    if (parsed.permanent) {
+        c.err("error: --permanent is only valid with remove\n", .{});
+        return Exit.usage;
+    }
+    if (parsed.clear_java and parsed.java != null) {
+        c.err("error: --clear-java conflicts with --java\n", .{});
+        return Exit.usage;
+    }
+    if (parsed.clear_memory and (parsed.min_memory != null or parsed.max_memory != null)) {
+        c.err("error: --clear-memory conflicts with --min-memory/--max-memory\n", .{});
+        return Exit.usage;
+    }
+    if (parsed.clear_jvm_args and parsed.jvm_args.items.len != 0) {
+        c.err("error: --clear-jvm-args conflicts with --jvm-arg\n", .{});
+        return Exit.usage;
+    }
+
+    const game_dir = instanceGameDir(c, parsed.dir) orelse return Exit.usage;
+    const path = instance_mod.dir(c.arena, game_dir, parsed.id) catch |err| {
+        return instanceError(c, err);
+    };
+    var record = instance_mod.loadRequired(c.io, c.arena, game_dir, parsed.id) catch |err| {
+        return instanceError(c, err);
+    };
+
+    var changed = false;
+    if (parsed.name) |value| {
+        record.name = instance_mod.cleanName(value) catch |err| return instanceError(c, err);
+        changed = true;
+    }
+    if (parsed.version) |value| {
+        instance_mod.validateVersion(value) catch |err| return instanceError(c, err);
+        if (!(instance_mod.versionInstalled(c.io, c.arena, game_dir, value) catch false)) {
+            c.err("error: version '{s}' is not installed\n", .{value});
+            return Exit.missing_files;
+        }
+        record.version = value;
+        changed = true;
+    }
+    if (parsed.clear_java) {
+        record.java = null;
+        changed = true;
+    } else if (parsed.java) |value| {
+        if (value.len == 0) {
+            c.err("error: --java must not be empty; use --clear-java\n", .{});
+            return Exit.usage;
+        }
+        record.java = value;
+        changed = true;
+    }
+    if (parsed.clear_memory) {
+        record.min_memory_mb = null;
+        record.max_memory_mb = null;
+        changed = true;
+    } else {
+        if (parsed.min_memory) |value| {
+            record.min_memory_mb = value;
+            changed = true;
+        }
+        if (parsed.max_memory) |value| {
+            record.max_memory_mb = value;
+            changed = true;
+        }
+    }
+    if (parsed.clear_jvm_args) {
+        record.jvm_args = &.{};
+        changed = true;
+    } else if (parsed.jvm_args.items.len != 0) {
+        record.jvm_args = parsed.jvm_args.items;
+        changed = true;
+    }
+    if (!changed) {
+        c.err("error: no changes requested\n", .{});
+        return Exit.usage;
+    }
+    instance_mod.validateMemory(record.min_memory_mb, record.max_memory_mb) catch |err| {
+        return instanceError(c, err);
+    };
+    store.saveInstance(c.io, path, record) catch |err| return instanceError(c, err);
+
+    const view: InstanceView = .{
+        .id = parsed.id,
+        .name = instance_mod.effectiveName(parsed.id, record),
+        .version = record.version,
+        .java = record.java,
+        .min_memory_mb = record.min_memory_mb,
+        .max_memory_mb = record.max_memory_mb,
+        .jvm_args = record.jvm_args,
+        .path = path,
+        .has_record = true,
+        .invalid = false,
+        .error_name = "",
+        .schema_version = record.schema_version,
+    };
+    if (c.json) c.emitJson(view) else printInstance(c, view);
+    return Exit.ok;
+}
+
+fn cmdInstanceRemove(c: Ctx, args: []const []const u8) u8 {
+    const parsed = parseInstanceArgs(c, args, true) orelse {
+        c.err("usage: arclight-launcher instance remove <id> [--permanent] [--dir <path>] [--json]\n", .{});
+        return Exit.usage;
+    };
+    if (parsed.name != null or parsed.version != null or parsed.java != null or parsed.min_memory != null or parsed.max_memory != null or parsed.jvm_args.items.len != 0 or parsed.clear_java or parsed.clear_memory or parsed.clear_jvm_args) {
+        c.err("error: remove takes only <id>, --permanent and --dir\n", .{});
+        return Exit.usage;
+    }
+    const game_dir = instanceGameDir(c, parsed.dir) orelse return Exit.usage;
+    const result = instance_mod.remove(
+        c.io,
+        c.arena,
+        game_dir,
+        parsed.id,
+        parsed.permanent,
+    ) catch |err| return instanceError(c, err);
+
+    if (c.json) {
+        c.emitJson(.{
+            .ok = true,
+            .id = parsed.id,
+            .permanent = parsed.permanent,
+            .path = if (parsed.permanent) result.original else result.path,
+        });
+    } else if (parsed.permanent) {
+        c.out("deleted instance ");
+        c.out(parsed.id);
+        c.out("\n");
+    } else {
+        c.out("moved instance ");
+        c.out(parsed.id);
+        c.out(" to ");
+        c.out(result.path);
+        c.out("\n");
+    }
+    return Exit.ok;
+}
+
+fn cmdInstanceRestore(c: Ctx, args: []const []const u8) u8 {
+    const parsed = parseInstanceArgs(c, args, true) orelse {
+        c.err("usage: arclight-launcher instance restore <id> [--dir <path>] [--json]\n", .{});
+        return Exit.usage;
+    };
+    if (parsed.name != null or parsed.version != null or parsed.java != null or parsed.min_memory != null or parsed.max_memory != null or parsed.jvm_args.items.len != 0 or parsed.clear_java or parsed.clear_memory or parsed.clear_jvm_args or parsed.permanent) {
+        c.err("error: restore takes only <id> and --dir\n", .{});
+        return Exit.usage;
+    }
+    const game_dir = instanceGameDir(c, parsed.dir) orelse return Exit.usage;
+    const result = instance_mod.restore(c.io, c.arena, game_dir, parsed.id) catch |err| {
+        return instanceError(c, err);
+    };
+    if (c.json) {
+        c.emitJson(.{
+            .ok = true,
+            .id = result.id,
+            .from = result.from,
+            .path = result.path,
+        });
+    } else {
+        c.out("restored instance ");
+        c.out(result.id);
+        c.out(" to ");
+        c.out(result.path);
+        c.out("\n");
     }
     return Exit.ok;
 }

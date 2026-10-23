@@ -16,7 +16,6 @@ about capacity rather than taste.
 
 Might not wrong, just more than one person can keep working:
 
-- a GUI, or a wizard that walks you through setup
 - package manager recipes, prebuilt binaries, release artifacts
 - automatic download of a Java runtime
 - mods, modpacks, mod loaders, installer automation

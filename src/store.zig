@@ -42,15 +42,24 @@ pub const Public = struct {
 pub const Error = error{
     NoHomeDirectory,
     CorruptAccountFile,
+    CorruptInstanceFile,
+    UnsupportedInstanceSchema,
 };
 
 /// `<game>/instances/<name>/instance.json`. A record of what the instance runs,
 /// so `launch --instance <name>` needs no other arguments.
+///
+/// `name` is for display only; the directory name is the stable instance id.
+/// `min_memory_mb` / `max_memory_mb` are translated into `-Xms` / `-Xmx`.
 pub const Instance = struct {
+    schema_version: u32 = 1,
+    name: []const u8 = "",
     version: []const u8 = "",
     /// Optional explicit runtime, overriding JAVA_HOME/PATH.
     java: ?[]const u8 = null,
-    /// Appended to the JVM arguments the version json asks for, e.g. "-Xmx4G".
+    min_memory_mb: ?u32 = null,
+    max_memory_mb: ?u32 = null,
+    /// Appended to the JVM arguments the version json asks for.
     jvm_args: []const []const u8 = &.{},
 };
 
@@ -64,9 +73,11 @@ pub fn loadInstance(
         error.FileNotFound => return null,
         else => return err,
     };
-    return std.json.parseFromSliceLeaky(Instance, arena, raw, .{
+    const parsed = std.json.parseFromSliceLeaky(Instance, arena, raw, .{
         .ignore_unknown_fields = true,
-    }) catch Error.CorruptAccountFile;
+    }) catch return Error.CorruptInstanceFile;
+    if (parsed.schema_version > 1) return Error.UnsupportedInstanceSchema;
+    return parsed;
 }
 
 pub fn saveInstance(io: Io, dir: []const u8, inst: Instance) !void {
@@ -75,8 +86,14 @@ pub fn saveInstance(io: Io, dir: []const u8, inst: Instance) !void {
     const arena = arena_state.allocator();
 
     const body = try std.json.Stringify.valueAlloc(arena, inst, .{ .whitespace = .indent_2 });
+    const cwd = Io.Dir.cwd();
     const path = try std.fs.path.join(arena, &.{ dir, "instance.json" });
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = body });
+    const tmp = try std.fs.path.join(arena, &.{ dir, "instance.json.tmp" });
+    try cwd.writeFile(io, .{ .sub_path = tmp, .data = body });
+    cwd.rename(tmp, cwd, path, io) catch |e| {
+        cwd.deleteFile(io, tmp) catch {};
+        return e;
+    };
 }
 
 /// Resolve `$XDG_CONFIG_HOME/arclight`, falling back to `$HOME/.config/arclight`.
@@ -184,4 +201,23 @@ test "config dir honours ARCLIGHT_CONFIG_DIR" {
 
     try environ.put("ARCLIGHT_CONFIG_DIR", "/tmp/arclight-test");
     try std.testing.expectEqualStrings("/tmp/arclight-test", try configDir(arena, &environ));
+}
+
+test "instance records accept old fields and default the new ones" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const inst = try std.json.parseFromSliceLeaky(
+        Instance,
+        arena,
+        "{\"version\":\"1.20.1\",\"jvm_args\":[\"-Xmx4G\"]}",
+        .{ .ignore_unknown_fields = true },
+    );
+    try std.testing.expectEqual(@as(u32, 1), inst.schema_version);
+    try std.testing.expectEqualStrings("", inst.name);
+    try std.testing.expectEqual(@as(?u32, null), inst.min_memory_mb);
+    try std.testing.expectEqual(@as(?u32, null), inst.max_memory_mb);
+    try std.testing.expectEqualStrings("1.20.1", inst.version);
+    try std.testing.expectEqual(@as(usize, 1), inst.jvm_args.len);
 }
