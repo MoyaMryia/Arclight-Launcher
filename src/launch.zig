@@ -25,7 +25,11 @@ pub const Error = error{
 };
 
 pub const Options = struct {
+    /// Installation root: holds versions/, libraries/, assets/.
     game_dir: []const u8,
+    /// Where the game runs and writes saves/mods/config. Defaults to game_dir.
+    /// This is the only thing an instance changes.
+    run_dir: ?[]const u8 = null,
     version: []const u8,
     /// Print the command line instead of running it.
     dry_run: bool = false,
@@ -85,6 +89,7 @@ pub fn launch(
     };
 
     // ---- classpath -----------------------------------------------------
+    const run_dir = opts.run_dir orelse opts.game_dir;
     const sep: u8 = if (builtin.os.tag == .windows) ';' else ':';
     var cp: std.ArrayList(u8) = .empty;
     // A loader's version json re-lists libraries the vanilla json already
@@ -190,7 +195,7 @@ pub fn launch(
     const vars = [_]Var{
         .{ .name = "auth_player_name", .value = name },
         .{ .name = "version_name", .value = leaf.id },
-        .{ .name = "game_directory", .value = opts.game_dir },
+        .{ .name = "game_directory", .value = run_dir },
         .{ .name = "assets_root", .value = assets_dir },
         .{ .name = "game_assets", .value = assets_dir },
         .{ .name = "assets_index_name", .value = asset_index },
@@ -299,7 +304,7 @@ pub fn launch(
 
     var child = std.process.spawn(io, .{
         .argv = final_argv,
-        .cwd = .{ .path = opts.game_dir },
+        .cwd = .{ .path = run_dir },
         .stdin = .inherit,
         .stdout = .inherit,
         .stderr = .inherit,

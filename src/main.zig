@@ -68,9 +68,10 @@ const usage_text =
     \\COMMANDS:
     \\    login              Sign in with a Microsoft account (device code flow)
     \\    versions           List Minecraft versions from Mojang's manifest
+    \\    instances          List instance directories under <dir>/instances
     \\    install <version>  Fetch a version, its libraries and assets
     \\                       --fabric | --forge | --neoforge add a mod loader
-    \\    launch <version>   Start an installed version
+    \\    launch <version>   Start an installed version (--instance <name> to isolate)
     \\    status             Show the stored account (never prints tokens)
     \\    logout             Forget the stored account
     \\    java               List detected Java runtimes
@@ -80,6 +81,7 @@ const usage_text =
     \\OPTIONS:
     \\    --json             Machine-readable output on stdout
     \\    --dir <path>       Game directory for install/launch (default ~/.minecraft)
+    \\    --instance <name>  With launch: run in <dir>/instances/<name>
     \\    --dry-run          With launch: print the java command line, do not run it
     \\    --no-assets        With install: skip assets/objects
     \\    --threads <n>      With install: parallel downloads (default 8)
@@ -150,6 +152,7 @@ fn dispatch(c: Ctx, cmd: []const u8, args: []const []const u8) u8 {
     if (eq(cmd, "status")) return cmdStatus(c);
     if (eq(cmd, "java")) return cmdJava(c);
     if (eq(cmd, "versions")) return cmdVersions(c, args);
+    if (eq(cmd, "instances")) return cmdInstances(c, args);
     if (eq(cmd, "logout")) return cmdLogout(c);
     if (eq(cmd, "login")) return cmdLogin(c, args);
     if (eq(cmd, "install")) return cmdInstall(c, args);
@@ -641,6 +644,8 @@ const LaunchFlags = struct {
     dry_run: bool = false,
     /// Re-download whatever preflight reports as missing before launching.
     repair: bool = false,
+    /// Run under <dir>/instances/<name>: own saves/, mods/, config/.
+    instance: ?[]const u8 = null,
 };
 
 fn parseLaunchFlags(args: []const []const u8) ?LaunchFlags {
@@ -656,6 +661,10 @@ fn parseLaunchFlags(args: []const []const u8) ?LaunchFlags {
             f.dry_run = true;
         } else if (eq(a, "--repair")) {
             f.repair = true;
+        } else if (eq(a, "--instance")) {
+            i += 1;
+            if (i >= args.len) return null;
+            f.instance = args[i];
         } else if (a.len != 0 and a[0] == '-') {
             return null;
         } else if (f.version.len == 0) {
@@ -668,7 +677,11 @@ fn parseLaunchFlags(args: []const []const u8) ?LaunchFlags {
 
 fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
     const flags = parseLaunchFlags(args) orelse {
-        c.err("usage: arclight-launcher launch <version> [--dir <path>] [--dry-run] [--repair]\n", .{});
+        c.err(
+            "usage: arclight-launcher launch <version> [--dir <path>] [--instance <name>]\n" ++
+                "                                    [--dry-run] [--repair]\n",
+            .{},
+        );
         return Exit.usage;
     };
 
@@ -680,6 +693,32 @@ fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
         const home = c.environ.get("HOME") orelse return Exit.usage;
         break :blk std.fs.path.join(arena, &.{ home, ".minecraft" }) catch return Exit.config;
     };
+
+    // An instance only changes where the game runs; versions, libraries and
+    // assets stay shared in the installation root.
+    var run_dir = game_dir;
+    if (flags.instance) |name| {
+        if (name.len == 0 or std.mem.indexOfAny(u8, name, "/\\") != null) {
+            c.err("error: instance name must not contain a path separator\n", .{});
+            return Exit.usage;
+        }
+        run_dir = std.fs.path.join(arena, &.{ game_dir, "instances", name }) catch return Exit.config;
+        Io.Dir.cwd().createDirPath(c.io, run_dir) catch |e| {
+            c.err("error: cannot create instance directory: {s}\n", .{@errorName(e)});
+            return Exit.config;
+        };
+        // Legacy versions read by-name assets from <gameDir>/resources. Point
+        // the instance at the shared copy instead of duplicating it.
+        const shared_resources = std.fs.path.join(arena, &.{ game_dir, "resources" }) catch return Exit.config;
+        const instance_resources = std.fs.path.join(arena, &.{ run_dir, "resources" }) catch return Exit.config;
+        io_link_or_symlink: {
+            if (Io.Dir.cwd().statFile(c.io, instance_resources, .{})) |_| break :io_link_or_symlink else |_| {}
+            if (Io.Dir.cwd().statFile(c.io, shared_resources, .{})) |_| {
+                Io.Dir.cwd().symLink(c.io, shared_resources, instance_resources, .{ .is_directory = true }) catch {};
+            } else |_| {}
+        }
+        if (!c.json) c.err("instance: {s}\n", .{run_dir});
+    }
 
     // Preflight before any network work: fail fast, and tell the user exactly
     // what is missing instead of letting the JVM die on it.
@@ -746,6 +785,7 @@ fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
 
     const outcome = launch_mod.launch(c.io, c.gpa, arena, .{
         .game_dir = game_dir,
+        .run_dir = run_dir,
         .version = flags.version,
         .dry_run = flags.dry_run,
         .environ = c.environ,
@@ -873,4 +913,61 @@ fn repairVersion(
             .progress = install_mod.stderrIsTty(c.io),
         }, leaf, version_dir, &stats);
     }
+}
+
+fn cmdInstances(c: Ctx, args: []const []const u8) u8 {
+    var dir_arg: ?[]const u8 = null;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (eq(args[i], "--dir")) {
+            i += 1;
+            if (i >= args.len) return Exit.usage;
+            dir_arg = args[i];
+        } else return Exit.usage;
+    }
+
+    var arena_state = std.heap.ArenaAllocator.init(c.gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const game_dir = dir_arg orelse blk: {
+        const home = c.environ.get("HOME") orelse return Exit.usage;
+        break :blk std.fs.path.join(arena, &.{ home, ".minecraft" }) catch return Exit.config;
+    };
+    const root = std.fs.path.join(arena, &.{ game_dir, "instances" }) catch return Exit.config;
+
+    var list: std.ArrayList([]const u8) = .empty;
+    if (Io.Dir.cwd().openDir(c.io, root, .{ .iterate = true })) |dir_handle| {
+        var dir = dir_handle;
+        defer dir.close(c.io);
+        var it = dir.iterate();
+        while (it.next(c.io) catch null) |entry| {
+            if (entry.kind != .directory) continue;
+            try_list: {
+                const name = arena.dupe(u8, entry.name) catch break :try_list;
+                list.append(arena, name) catch break :try_list;
+            }
+        }
+    } else |_| {}
+
+    std.mem.sort([]const u8, list.items, {}, struct {
+        fn lt(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lt);
+
+    if (c.json) {
+        c.emitJson(.{ .root = root, .instances = list.items });
+    } else if (list.items.len == 0) {
+        c.out("no instances yet\n");
+        var buf: [512]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "create one with: launch <version> --instance <name>\n", .{}) catch "";
+        c.out(line);
+    } else {
+        for (list.items) |name| {
+            c.out(name);
+            c.out("\n");
+        }
+    }
+    return Exit.ok;
 }

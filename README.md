@@ -17,6 +17,12 @@ All commands work: `login`, `install`, `launch`, `versions`, `java`, `status`,
 `logout`. `launch` refreshes the stored session before starting the game, and
 `launch --dry-run` prints the exact argv without running it.
 
+Instances: `--instance <name>` runs the game in `<dir>/instances/<name>`, so
+saves, mods, config and logs stay separate while `versions/`, `libraries/` and
+`assets/` are shared by every instance. `arclight instances` lists them. Without
+`--instance` the game runs directly in `<dir>`, which is what a single install
+wants.
+
 `install` takes an optional mod loader:
 
 ```
