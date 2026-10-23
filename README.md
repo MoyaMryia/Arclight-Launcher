@@ -19,9 +19,31 @@ All commands work: `login`, `install`, `launch`, `versions`, `java`, `status`,
 
 Instances: `--instance <name>` runs the game in `<dir>/instances/<name>`, so
 saves, mods, config and logs stay separate while `versions/`, `libraries/` and
-`assets/` are shared by every instance. `arclight instances` lists them. Without
-`--instance` the game runs directly in `<dir>`, which is what a single install
-wants.
+`assets/` are shared by every instance. `arclight instances` lists them, with the
+version each one runs. Without `--instance` the game runs directly in `<dir>`,
+which is what a single install wants.
+
+The first `launch <version> --instance <name>` writes
+`instances/<name>/instance.json`, and later launches only need the name:
+
+```
+arclight launch 1.16.5 --instance survival   # records the version
+arclight launch --instance survival          # from then on
+```
+
+That file is also where per-instance runtime settings live, and nothing else in
+this project is per-instance:
+
+```json
+{
+  "version": "1.16.5",
+  "java": "/path/to/java",
+  "jvm_args": ["-Xmx4G", "-XX:+UseG1GC"]
+}
+```
+
+`java` overrides JAVA_HOME/PATH for this instance; `jvm_args` are appended after
+the arguments the version JSON asks for. Both are optional.
 
 `install` takes an optional mod loader:
 

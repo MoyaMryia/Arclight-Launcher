@@ -44,6 +44,41 @@ pub const Error = error{
     CorruptAccountFile,
 };
 
+/// `<game>/instances/<name>/instance.json`. A record of what the instance runs,
+/// so `launch --instance <name>` needs no other arguments.
+pub const Instance = struct {
+    version: []const u8 = "",
+    /// Optional explicit runtime, overriding JAVA_HOME/PATH.
+    java: ?[]const u8 = null,
+    /// Appended to the JVM arguments the version json asks for, e.g. "-Xmx4G".
+    jvm_args: []const []const u8 = &.{},
+};
+
+pub fn loadInstance(
+    io: Io,
+    arena: std.mem.Allocator,
+    instance_dir: []const u8,
+) !?Instance {
+    const path = try std.fs.path.join(arena, &.{ instance_dir, "instance.json" });
+    const raw = Io.Dir.cwd().readFileAlloc(io, path, arena, Io.Limit.limited(1 << 16)) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    return std.json.parseFromSliceLeaky(Instance, arena, raw, .{
+        .ignore_unknown_fields = true,
+    }) catch Error.CorruptAccountFile;
+}
+
+pub fn saveInstance(io: Io, dir: []const u8, inst: Instance) !void {
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const body = try std.json.Stringify.valueAlloc(arena, inst, .{ .whitespace = .indent_2 });
+    const path = try std.fs.path.join(arena, &.{ dir, "instance.json" });
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = body });
+}
+
 /// Resolve `$XDG_CONFIG_HOME/arclight`, falling back to `$HOME/.config/arclight`.
 /// Caller owns the returned slice (use an arena).
 pub fn configDir(

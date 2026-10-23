@@ -30,6 +30,10 @@ pub const Options = struct {
     /// Where the game runs and writes saves/mods/config. Defaults to game_dir.
     /// This is the only thing an instance changes.
     run_dir: ?[]const u8 = null,
+    /// Explicit runtime, from the instance record.
+    java_exe: ?[]const u8 = null,
+    /// Extra JVM arguments, from the instance record.
+    extra_jvm: []const []const u8 = &.{},
     version: []const u8,
     /// Print the command line instead of running it.
     dry_run: bool = false,
@@ -219,7 +223,8 @@ pub fn launch(
     // ---- assemble -------------------------------------------------------
     var argv: std.ArrayList([]const u8) = .empty;
 
-    const java_exe = java_mod.first(arena, opts.environ, io) catch return Error.NoJava;
+    const java_exe = opts.java_exe orelse
+        (java_mod.first(arena, opts.environ, io) catch return Error.NoJava);
 
     // Versions declare the runtime they were built against. Ancient versions
     // (launchwrapper 1.6 and older) break on Java 9+ with a ClassCastException
@@ -236,16 +241,21 @@ pub fn launch(
         if (java_mod.majorVersion(io, arena, gpa, java_exe)) |actual| {
             if (actual < wanted_java) {
                 std.debug.print(
-                    "warning: this version wants Java {d} or newer, {s} reports Java {d}\n" ++
-                        "         set JAVA_HOME or ARCLIGHT_JAVA to a matching runtime if it fails\n",
+                    "warning: this version needs Java {d} or newer, {s} reports Java {d}\n" ++
+                        "         point JAVA_HOME or ARCLIGHT_JAVA at a matching runtime\n",
                     .{ wanted_java, java_exe, actual },
                 );
-            } else if (actual > wanted_java + 4) {
+            } else if (actual >= 9 and std.mem.indexOf(u8, main_class, "launchwrapper") != null) {
+                // The one breakage we can predict: launchwrapper 1.x casts the
+                // system class loader to URLClassLoader, which stopped being true
+                // in Java 9. A version declaring Java 8 is otherwise fine on a
+                // newer runtime (1.16.5 runs on 21), so only warn here.
                 std.debug.print(
-                    "warning: this version was built for Java {d}, {s} reports Java {d}\n" ++
-                        "         old loaders (launchwrapper) cannot run on Java 9+;\n" ++
-                        "         set ARCLIGHT_JAVA to a Java {d} runtime if the launch fails\n",
-                    .{ wanted_java, java_exe, actual, wanted_java },
+                    "warning: this version loads through launchwrapper, which cannot run on\n" ++
+                        "         Java 9+ ({s} reports Java {d}); it fails with\n" ++
+                        "         \"AppClassLoader cannot be cast to URLClassLoader\"\n" ++
+                        "         set ARCLIGHT_JAVA to a Java {d} runtime\n",
+                    .{ java_exe, actual, wanted_java },
                 );
             }
         } else |_| {}
@@ -279,6 +289,8 @@ pub fn launch(
             if (!log_added) try argv.append(arena, la);
         }
     }
+
+    for (opts.extra_jvm) |a| try argv.append(arena, a);
 
     try argv.append(arena, main_class);
 

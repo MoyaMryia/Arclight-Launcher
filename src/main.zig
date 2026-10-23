@@ -671,7 +671,7 @@ fn parseLaunchFlags(args: []const []const u8) ?LaunchFlags {
             f.version = a;
         } else return null;
     }
-    if (f.version.len == 0) return null;
+    if (f.version.len == 0 and f.instance == null) return null;
     return f;
 }
 
@@ -697,6 +697,7 @@ fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
     // An instance only changes where the game runs; versions, libraries and
     // assets stay shared in the installation root.
     var run_dir = game_dir;
+    var instance_record: ?store.Instance = null;
     if (flags.instance) |name| {
         if (name.len == 0 or std.mem.indexOfAny(u8, name, "/\\") != null) {
             c.err("error: instance name must not contain a path separator\n", .{});
@@ -717,13 +718,39 @@ fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
                 Io.Dir.cwd().symLink(c.io, shared_resources, instance_resources, .{ .is_directory = true }) catch {};
             } else |_| {}
         }
+        instance_record = store.loadInstance(c.io, arena, run_dir) catch null;
         if (!c.json) c.err("instance: {s}\n", .{run_dir});
+    }
+
+    // `launch --instance <name>` reads the version from the instance record, so
+    // a configured instance needs no other arguments.
+    var version = flags.version;
+    if (version.len == 0) {
+        const rec = instance_record orelse {
+            c.err(
+                "error: no instance.json in {s}\n" ++
+                    "hint: launch once with a version to record it:\n" ++
+                    "      arclight-launcher launch <version> --instance {s}\n",
+                .{ run_dir, flags.instance.? },
+            );
+            return Exit.usage;
+        };
+        if (rec.version.len == 0) {
+            c.err("error: instance.json has no \"version\"\n", .{});
+            return Exit.config;
+        }
+        version = rec.version;
+    } else if (flags.instance != null and instance_record == null) {
+        // First launch of this instance: remember what it runs.
+        store.saveInstance(c.io, run_dir, .{ .version = version }) catch |e| {
+            c.err("warning: cannot write instance.json: {s}\n", .{@errorName(e)});
+        };
     }
 
     // Preflight before any network work: fail fast, and tell the user exactly
     // what is missing instead of letting the JVM die on it.
-    var check = launch_mod.preflight(c.io, arena, game_dir, flags.version) catch |e| {
-        c.err("error: cannot inspect {s}: {s}\n", .{ flags.version, @errorName(e) });
+    var check = launch_mod.preflight(c.io, arena, game_dir, version) catch |e| {
+        c.err("error: cannot inspect {s}: {s}\n", .{ version, @errorName(e) });
         return Exit.config;
     };
 
@@ -732,14 +759,14 @@ fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
             "error: no versions/{s}/{s}.json in {s}\n" ++
                 "hint: `arclight-launcher install {s}` if it is in Mojang's manifest,\n" ++
                 "      otherwise place the version json and jar yourself\n",
-            .{ flags.version, flags.version, game_dir, flags.version },
+            .{ version, version, game_dir, version },
         );
         return Exit.missing_files;
     }
 
     if (flags.repair and (check.blocked() or check.assets_missing != 0)) {
-        if (repairVersion(c, arena, game_dir, flags.version, check.root_id)) |_| {
-            check = launch_mod.preflight(c.io, arena, game_dir, flags.version) catch check;
+        if (repairVersion(c, arena, game_dir, version, check.root_id)) |_| {
+            check = launch_mod.preflight(c.io, arena, game_dir, version) catch check;
         } else |e| {
             c.err("error: repair failed: {s}\n", .{@errorName(e)});
             return Exit.download;
@@ -763,7 +790,7 @@ fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
                 "      or `arclight-launcher install {s} --dir {s}`\n" ++
                 "      versions that never shipped in Mojang's manifest (April Fools\n" ++
                 "      snapshots, wiki builds) have to have their files placed by hand\n",
-            .{ flags.version, check.root_id, game_dir },
+            .{ version, check.root_id, game_dir },
         );
         return Exit.missing_files;
     }
@@ -786,7 +813,9 @@ fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
     const outcome = launch_mod.launch(c.io, c.gpa, arena, .{
         .game_dir = game_dir,
         .run_dir = run_dir,
-        .version = flags.version,
+        .java_exe = if (instance_record) |r| r.java else null,
+        .extra_jvm = if (instance_record) |r| r.jvm_args else &.{},
+        .version = version,
         .dry_run = flags.dry_run,
         .environ = c.environ,
     }, account) catch |e| {
@@ -946,6 +975,11 @@ fn cmdInstances(c: Ctx, args: []const []const u8) u8 {
             try_list: {
                 const name = arena.dupe(u8, entry.name) catch break :try_list;
                 list.append(arena, name) catch break :try_list;
+                const dir_path = std.fs.path.join(arena, &.{ root, name }) catch break :try_list;
+                if (store.loadInstance(c.io, arena, dir_path) catch null) |rec| {
+                    const shown = std.fmt.allocPrint(arena, "{s}\t{s}", .{ name, rec.version }) catch break :try_list;
+                    list.items[list.items.len - 1] = shown;
+                }
             }
         }
     } else |_| {}
