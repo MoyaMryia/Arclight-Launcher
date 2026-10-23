@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const Io = std.Io;
+const builtin = @import("builtin");
 const http = std.http;
 
 const fetch = @import("fetch.zig");
@@ -42,8 +43,12 @@ pub const Stats = struct {
     /// is survivable (a lang file, a sound); the count is reported so a re-run
     /// can finish them, and it does not fail the install.
     assets_failed: usize = 0,
-    /// Pre-1.7 versions map assets into `resources/` instead of `objects/`.
-    /// Not implemented; reported so the caller knows why a launch may fail.
+    /// Objects materialised under `assets/virtual/<id>/` (index with
+    /// `virtual: true`). Older versions read assets by name, not by hash.
+    virtual_assets: usize = 0,
+    /// Objects copied into `<game>/resources/` (`map_to_resources: true`).
+    resources_assets: usize = 0,
+    /// The index asked for a name-based layout but we could not build it.
     legacy_assets: bool = false,
 };
 
@@ -116,11 +121,6 @@ pub fn install(
             .ignore_unknown_fields = true,
         });
 
-        if (idx.virtual or idx.map_to_resources) {
-            stats.legacy_assets = true;
-            say(opts, "note: {s} uses legacy (virtual) assets; those are not unpacked\n", .{index.id});
-        }
-
         var asset_jobs: std.ArrayList(Job) = .empty;
         var it = idx.objects.map.iterator();
         while (it.next()) |entry| {
@@ -136,6 +136,50 @@ pub fn install(
         stats.assets = asset_jobs.items.len;
         say(opts, "assets: {d} objects ({d} MiB)\n", .{ stats.assets, stats.assets_bytes >> 20 });
         stats.assets_failed = try runBatch(io, gpa, arena, asset_jobs.items, opts, false);
+        // Pre-1.6 (and the "legacy" index) read assets by name. The official
+        // launcher materialises the hashed objects into a flat layout:
+        //   virtual           -> assets/virtual/<index id>/<name>
+        //   map_to_resources  -> <game>/resources/<name>
+        if (idx.virtual or idx.map_to_resources) {
+            const root = if (idx.map_to_resources)
+                try std.fs.path.join(arena, &.{ opts.game_dir, "resources" })
+            else
+                try std.fmt.allocPrint(arena, "{s}/assets/virtual/{s}", .{ opts.game_dir, index.id });
+
+            var materialised: usize = 0;
+            var it2 = idx.objects.map.iterator();
+            while (it2.next()) |entry| {
+                const name = entry.key_ptr.*;
+                const obj = entry.value_ptr.*;
+                if (obj.hash.len < 2) continue;
+
+                const source = try std.fmt.allocPrint(arena, "{s}/assets/objects/{s}/{s}", .{
+                    opts.game_dir, obj.hash[0..2], obj.hash,
+                });
+                const dest = try std.fs.path.join(arena, &.{ root, name });
+                if (tryStat(io, dest) != null) {
+                    materialised += 1;
+                    continue;
+                }
+                if (std.fs.path.dirname(dest)) |dir| {
+                    Io.Dir.cwd().createDirPath(io, dir) catch {};
+                }
+                linkOrCopy(io, arena, source, dest) catch |e| {
+                    say(opts, "warning: could not materialise {s}: {s}\n", .{ name, @errorName(e) });
+                    continue;
+                };
+                materialised += 1;
+            }
+
+            if (idx.map_to_resources) {
+                stats.resources_assets = materialised;
+                say(opts, "{d} assets copied into {s}\n", .{ materialised, root });
+            } else {
+                stats.virtual_assets = materialised;
+                say(opts, "{d} assets materialised in {s}\n", .{ materialised, root });
+            }
+        }
+
         if (stats.assets_failed != 0) {
             say(
                 opts,
@@ -283,6 +327,20 @@ pub fn installLibraries(
     }
 }
 
+
+fn tryStat(io: Io, path: []const u8) ?Io.File.Stat {
+    return Io.Dir.cwd().statFile(io, path, .{}) catch null;
+}
+
+/// Hard-link when the filesystem allows it (same game dir, so normally yes),
+/// otherwise copy. Assets are immutable, so sharing the inode is safe and keeps
+/// a virtual layout from doubling disk usage.
+fn linkOrCopy(io: Io, arena: std.mem.Allocator, source: []const u8, dest: []const u8) !void {
+    const cwd = Io.Dir.cwd();
+    if (cwd.hardLink(source, cwd, dest, io, .{})) |_| return else |_| {}
+    const bytes = try cwd.readFileAlloc(io, source, arena, Io.Limit.unlimited);
+    try cwd.writeFile(io, .{ .sub_path = dest, .data = bytes });
+}
 
 fn sanitize(arena: std.mem.Allocator, name: []const u8) ![]const u8 {
     const out = try arena.dupe(u8, name);

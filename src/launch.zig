@@ -148,13 +148,21 @@ pub fn launch(
     Io.Dir.cwd().createDirPath(io, natives_dir) catch {};
 
     // ---- assets ---------------------------------------------------------
-    const assets_dir = try std.fmt.allocPrint(arena, "{s}/assets", .{opts.game_dir});
+    var assets_dir = try std.fmt.allocPrint(arena, "{s}/assets", .{opts.game_dir});
     const asset_index = blk: {
         for (chain) |doc| {
             if (doc.assets) |a| break :blk a;
         }
         break :blk "legacy";
     };
+
+    // Pre-1.6 style indexes materialise objects by name under
+    // assets/virtual/<id>; the version json keeps saying `assets`, so the
+    // directory's presence is what tells us which layout this install uses.
+    const virtual_dir = try std.fmt.allocPrint(arena, "{s}/assets/virtual/{s}", .{
+        opts.game_dir, asset_index,
+    });
+    if (dirHasEntries(io, virtual_dir)) assets_dir = virtual_dir;
 
     // ---- logging config --------------------------------------------------
     var log_arg: ?[]const u8 = null;
@@ -362,6 +370,8 @@ pub const Preflight = struct {
     /// never shipped in Mojang's manifest (April Fools builds, wiki-only
     /// snapshots) land here when the user has not dropped the files in yet.
     no_version_json: bool = false,
+    /// The asset index wants a by-name layout (virtual / map_to_resources).
+    legacy_layout: bool = false,
     /// The root of the inheritance chain: the id `install` understands.
     root_id: []const u8 = "",
 
@@ -481,6 +491,16 @@ pub fn preflight(
                 .ignore_unknown_fields = true,
             }) catch null;
             if (idx) |parsed| {
+                // A virtual index is only usable once the objects are laid out
+                // by name; check that, not just the object store.
+                if (parsed.virtual or parsed.map_to_resources) {
+                    const root = if (parsed.map_to_resources)
+                        try std.fs.path.join(arena, &.{ game_dir, "resources" })
+                    else
+                        try std.fmt.allocPrint(arena, "{s}/assets/virtual/{s}", .{ game_dir, index_id });
+                    if (!dirHasEntries(io, root)) try add(&fatal, &seen, arena, root);
+                    report.legacy_layout = true;
+                }
                 var it = parsed.objects.map.iterator();
                 while (it.next()) |entry| {
                     const obj = entry.value_ptr.*;

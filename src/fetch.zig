@@ -108,10 +108,11 @@ fn downloadOnce(client: *http.Client, io: Io, gpa: std.mem.Allocator, spec: Spec
     const res = try client.fetch(.{
         .location = .{ .url = spec.url },
         .response_writer = &fw.interface,
-        // One connection per request. The pool was handing back connections
-        // that Mojang's CDN answered with a bare 400 and an empty body, which
-        // looked exactly like a real failure and cost more to diagnose than the
-        // extra TLS handshake costs to avoid.
+        // One connection per request. Mojang's CDN intermittently answers with
+        // a bare 400 and an empty body under a burst - the same URL succeeds
+        // when requested alone - and a pooled connection made that look like a
+        // client bug. Not reusing connections removes one variable; the retry
+        // loop is what actually covers the rest.
         .keep_alive = false,
         .extra_headers = &.{
             .{ .name = "user-agent", .value = user_agent },
