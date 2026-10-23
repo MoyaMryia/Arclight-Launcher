@@ -37,7 +37,7 @@ pub const Error = error{
     EmptyUrl,
 };
 
-const max_attempts = 4;
+const max_attempts = 5;
 
 /// One-off download with a throwaway client. Use `getShared` when running a
 /// batch: a worker that keeps one client reuses its TLS connections.
@@ -81,9 +81,9 @@ pub fn getShared(client: *http.Client, io: Io, gpa: std.mem.Allocator, spec: Spe
     while (attempt < max_attempts) : (attempt += 1) {
         const result = downloadOnce(client, io, gpa, spec, attempt) catch |err| {
             if (attempt + 1 == max_attempts) return err;
-            // Mojang's CDN answers a burst with a bare 400/429 and an HTML body,
-            // so back off far enough for the throttle window to pass.
-            const backoff_ms: u64 = 1000 * (@as(u64, 1) << @intCast(attempt));
+            // Mojang's CDN answers a burst with a bare 400/429 and an empty or
+            // HTML body, so back off far enough for the throttle window to pass.
+            const backoff_ms: u64 = 2000 * (@as(u64, 1) << @intCast(attempt));
             Io.sleep(io, .{ .nanoseconds = @intCast(backoff_ms * std.time.ns_per_ms) }, .awake) catch {};
             continue;
         };

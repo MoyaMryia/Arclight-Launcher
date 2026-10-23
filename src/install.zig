@@ -38,6 +38,10 @@ pub const Stats = struct {
     natives_jars: usize = 0,
     assets: usize = 0,
     assets_bytes: u64 = 0,
+    /// Objects the CDN refused after every retry. A handful of missing assets
+    /// is survivable (a lang file, a sound); the count is reported so a re-run
+    /// can finish them, and it does not fail the install.
+    assets_failed: usize = 0,
     /// Pre-1.7 versions map assets into `resources/` instead of `objects/`.
     /// Not implemented; reported so the caller knows why a launch may fail.
     legacy_assets: bool = false,
@@ -131,7 +135,15 @@ pub fn install(
         }
         stats.assets = asset_jobs.items.len;
         say(opts, "assets: {d} objects ({d} MiB)\n", .{ stats.assets, stats.assets_bytes >> 20 });
-        try runBatch(io, gpa, arena, asset_jobs.items, opts);
+        stats.assets_failed = try runBatch(io, gpa, arena, asset_jobs.items, opts, false);
+        if (stats.assets_failed != 0) {
+            say(
+                opts,
+                "{d} objects could not be fetched after retrying; the install is\n" ++
+                    "usable and re-running `install` will pick up where this left off.\n",
+                .{stats.assets_failed},
+            );
+        }
     }
 
     return stats;
@@ -205,41 +217,57 @@ pub fn installLibraries(
         }
 
         // Legacy natives: a classifier jar that must be unpacked.
+        //
+        // Several libraries share one classifier name (`natives-linux`), so the
+        // cache key has to be the artifact file name. Keying it by classifier
+        // made five LWJGL jars collide on one path, and with parallel workers
+        // that surfaced as "FileNotFound" on the renamed .part file.
         if (lib.natives) |natives| {
-            const key = natives.map.get(meta.osName()) orelse continue;
-            if (key.len == 0) continue;
+            const classifier = natives.map.get(meta.osName()) orelse continue;
+            if (classifier.len == 0) continue;
 
             var url: ?[]const u8 = null;
             var sha1: ?[]const u8 = null;
             var size: ?u64 = null;
+            var file_name: ?[]const u8 = null;
 
             if (lib.downloads) |dls| {
                 if (dls.classifiers) |classifiers| {
-                    if (classifiers.map.get(key)) |artifact| {
+                    if (classifiers.map.get(classifier)) |artifact| {
                         url = artifact.url;
                         sha1 = artifact.sha1;
                         size = artifact.size;
+                        if (artifact.path.len != 0) file_name = artifact.path;
                     }
                 }
             }
-            if (url == null) {
-                if (try meta.mavenPath(arena, lib, key)) |m| url = m.url;
+            if (url == null or file_name == null) {
+                if (try meta.mavenPath(arena, lib, classifier)) |m| {
+                    if (url == null) url = m.url;
+                    if (file_name == null) file_name = m.rel;
+                }
             }
             const jar_url = url orelse continue;
 
-            const dest = try std.fmt.allocPrint(arena, "{s}/natives/{s}.jar", .{
-                opts.cache_dir, try sanitize(arena, key),
-            });
+            const dest = if (file_name) |full|
+                try std.fmt.allocPrint(arena, "{s}/natives/{s}", .{
+                    opts.cache_dir, std.fs.path.basename(full),
+                })
+            else
+                try std.fmt.allocPrint(arena, "{s}/natives/{s}.jar", .{
+                    opts.cache_dir, try sanitize(arena, classifier),
+                });
+
             try native_list.append(arena, .{ .url = jar_url, .dest = dest, .sha1 = sha1, .size = size });
             stats.natives_jars += 1;
         }
     }
 
     say(opts, "libraries: {d} to fetch, {d} skipped by rules\n", .{ jobs.items.len, stats.libraries_skipped });
-    try runBatch(io, gpa, arena, jobs.items, opts);
+    _ = try runBatch(io, gpa, arena, jobs.items, opts, true);
 
     if (native_list.items.len != 0) {
-        try runBatch(io, gpa, arena, native_list.items, opts);
+        _ = try runBatch(io, gpa, arena, native_list.items, opts, true);
         const natives_dir = try std.fs.path.join(arena, &.{ version_dir, "natives" });
         try Io.Dir.cwd().createDirPath(io, natives_dir);
         const out_dir = try Io.Dir.cwd().openDir(io, natives_dir, .{});
@@ -300,14 +328,18 @@ fn mavenArtifact(
 
 // ---------------------------------------------------------------- batch
 
+/// Returns the number of jobs that still failed after every retry. When
+/// `fatal` is set any failure aborts the install: a missing library means the
+/// game will not start, so pretending otherwise only hides the problem.
 fn runBatch(
     io: Io,
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
     jobs: []const Job,
     opts: Options,
-) !void {
-    if (jobs.len == 0) return;
+    fatal: bool,
+) !usize {
+    if (jobs.len == 0) return 0;
 
     const width = @min(@max(opts.threads, 1), jobs.len);
     if (width <= 1) {
@@ -327,8 +359,8 @@ fn runBatch(
             progress(opts, i + 1, jobs.len);
         }
         if (opts.progress) std.debug.print("\n", .{});
-        if (failures != 0) return Error.DownloadFailed;
-        return;
+        if (failures != 0 and fatal) return Error.DownloadFailed;
+        return failures;
     }
 
     var ctx: Batch = .{
@@ -349,7 +381,9 @@ fn runBatch(
     for (threads.items) |t| t.join();
 
     if (opts.progress) std.debug.print("\n", .{});
-    if (ctx.failures.load(.monotonic) != 0) return Error.DownloadFailed;
+    const failed = ctx.failures.load(.monotonic);
+    if (failed != 0 and fatal) return Error.DownloadFailed;
+    return failed;
 }
 
 const Batch = struct {
@@ -398,6 +432,13 @@ fn worker(ctx: *Batch) void {
 fn progress(opts: Options, done: usize, total: usize) void {
     if (!opts.progress) return;
     std.debug.print("\r  {d}/{d}", .{ done, total });
+}
+
+/// A carriage-return progress line is only useful on a terminal. In a pipe or
+/// a log file it turns one line into thousands.
+pub fn stderrIsTty(io: Io) bool {
+    const tty = Io.File.stderr().isTty(io) catch return false;
+    return tty;
 }
 
 fn say(opts: Options, comptime fmt: []const u8, args: anytype) void {

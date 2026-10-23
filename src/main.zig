@@ -144,7 +144,7 @@ fn dispatch(c: Ctx, cmd: []const u8, args: []const []const u8) u8 {
     if (eq(cmd, "version")) return cmdVersion(c);
     if (eq(cmd, "status")) return cmdStatus(c);
     if (eq(cmd, "java")) return cmdJava(c);
-    if (eq(cmd, "versions")) return cmdVersions(c);
+    if (eq(cmd, "versions")) return cmdVersions(c, args);
     if (eq(cmd, "logout")) return cmdLogout(c);
     if (eq(cmd, "login")) return cmdLogin(c, args);
     if (eq(cmd, "install")) return cmdInstall(c, args);
@@ -279,7 +279,40 @@ fn cmdJava(c: Ctx) u8 {
 }
 
 
-fn cmdVersions(c: Ctx) u8 {
+const VersionFlags = struct {
+    from: ?[]const u8 = null,
+    limit: usize = 10,
+};
+
+fn parseVersionFlags(args: []const []const u8) ?VersionFlags {
+    var f: VersionFlags = .{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        if (eq(a, "--from")) {
+            i += 1;
+            if (i >= args.len) return null;
+            f.from = args[i];
+        } else if (eq(a, "--limit")) {
+            i += 1;
+            if (i >= args.len) return null;
+            f.limit = std.fmt.parseInt(usize, args[i], 10) catch return null;
+        } else if (std.mem.startsWith(u8, a, "--from=")) {
+            f.from = a["--from=".len..];
+        } else if (std.mem.startsWith(u8, a, "--limit=")) {
+            f.limit = std.fmt.parseInt(usize, a["--limit=".len..], 10) catch return null;
+        } else return null;
+    }
+    if (f.limit == 0) return null;
+    return f;
+}
+
+fn cmdVersions(c: Ctx, args: []const []const u8) u8 {
+    const flags = parseVersionFlags(args) orelse {
+        c.err("usage: arclight versions [--from <version>] [--limit <n>]\n", .{});
+        return Exit.usage;
+    };
+
     const dir = store.configDir(c.arena, c.environ) catch {
         c.err("error: cannot resolve config directory (HOME unset?)\n", .{});
         return Exit.config;
@@ -291,25 +324,38 @@ fn cmdVersions(c: Ctx) u8 {
         return Exit.download;
     };
 
-    const limit: usize = 10;
-    const shown = @min(manifest.versions.len, limit);
+    // The list runs newest to oldest. --from starts at a named version;
+    // --limit says how many to print from there.
+    var start: usize = 0;
+    if (flags.from) |wanted| {
+        start = blk: {
+            for (manifest.versions, 0..) |v, i| {
+                if (std.mem.eql(u8, v.id, wanted)) break :blk i;
+            }
+            c.err("error: no version called '{s}' in the manifest\n", .{wanted});
+            return Exit.usage;
+        };
+    }
+    const shown_end = @min(manifest.versions.len, start + flags.limit);
 
     if (c.json) {
         c.emitJson(.{
             .latest = manifest.latest,
             .total = manifest.versions.len,
-            .versions = manifest.versions[0..shown],
+            .versions = manifest.versions[start..shown_end],
         });
     } else {
         var buf: [256]u8 = undefined;
         c.out(std.fmt.bufPrint(&buf, "latest release: {s}\nlatest snapshot: {s}\n\n", .{
             manifest.latest.release, manifest.latest.snapshot,
         }) catch "");
-        for (manifest.versions[0..shown]) |v| {
+        for (manifest.versions[start..shown_end]) |v| {
             c.out(std.fmt.bufPrint(&buf, "{s:<12} {s}\n", .{ v.id, v.type }) catch "");
         }
-        var buf2: [128]u8 = undefined;
-        c.out(std.fmt.bufPrint(&buf2, "\n({d} versions total)\n", .{manifest.versions.len}) catch "");
+        var buf2: [160]u8 = undefined;
+        c.out(std.fmt.bufPrint(&buf2, "\n(versions {d}-{d} of {d})\n", .{
+            start + 1, shown_end, manifest.versions.len,
+        }) catch "");
     }
     return Exit.ok;
 }
@@ -402,6 +448,7 @@ fn cmdInstall(c: Ctx, args: []const []const u8) u8 {
         .version = flags.version,
         .want_assets = flags.assets,
         .threads = flags.threads,
+        .progress = install_mod.stderrIsTty(c.io),
     }) catch |e| {
         c.err("error: install failed: {s}\n", .{@errorName(e)});
         return switch (e) {
@@ -460,6 +507,7 @@ fn cmdInstall(c: Ctx, args: []const []const u8) u8 {
             .natives_jars = stats.natives_jars,
             .assets = stats.assets,
             .assets_bytes = stats.assets_bytes,
+            .assets_failed = stats.assets_failed,
             .legacy_assets = stats.legacy_assets,
         });
     } else {
