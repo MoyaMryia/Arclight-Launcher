@@ -71,34 +71,14 @@ pub fn launch(
     }
 
     // ---- version json chain -------------------------------------------
-    var chain_len: usize = 0;
-    var chain: [max_chain]meta.VersionJson = undefined;
-
-    var next: ?[]const u8 = opts.version;
-    var depth: usize = 0;
-    while (next) |id| {
-        if (depth >= max_chain) break;
-        const path = try std.fmt.allocPrint(arena, "{s}/versions/{s}/{s}.json", .{
-            opts.game_dir, id, id,
-        });
-        const body = Io.Dir.cwd().readFileAlloc(io, path, arena, Io.Limit.unlimited) catch |e| switch (e) {
-            error.FileNotFound => return if (depth == 0) Error.VersionNotInstalled else Error.ParentNotInstalled,
-            else => return e,
-        };
-        chain[chain_len] = try std.json.parseFromSliceLeaky(meta.VersionJson, arena, body, .{
-            .ignore_unknown_fields = true,
-        });
-        chain_len += 1;
-        next = chain[chain_len - 1].inheritsFrom;
-        depth += 1;
-    }
-    if (chain_len == 0) return Error.VersionNotInstalled;
+    const chain_list = try loadChain(io, arena, opts.game_dir, opts.version);
+    const chain = chain_list.docs;
 
     const leaf = chain[0];
-    const root = chain[chain_len - 1];
+    const root = chain[chain.len - 1];
 
     const main_class = blk: {
-        for (chain[0..chain_len]) |doc| {
+        for (chain) |doc| {
             if (doc.mainClass) |mc| break :blk mc;
         }
         return Error.NoMainClass;
@@ -113,7 +93,7 @@ pub fn launch(
     var seen: std.StringHashMap(void) = .init(arena);
 
     // oldest first, so a child version wins by being appended later
-    var i = chain_len;
+    var i = chain.len;
     while (i > 0) {
         i -= 1;
         const doc = chain[i];
@@ -128,8 +108,10 @@ pub fn launch(
                     if ((try seen.getOrPut(p)).found_existing) continue;
                     try cp.appendSlice(arena, p);
                     try cp.append(arena, sep);
-                    continue;
                 }
+                // `downloads` without an `artifact` means classifier-only (the
+                // natives jars): there is no base jar to put on the classpath.
+                continue;
             }
             // No `downloads` block: resolve the maven coordinate. Fabric's
             // libraries all look like this.
@@ -148,7 +130,7 @@ pub fn launch(
     var client_jar: []const u8 = try std.fmt.allocPrint(arena, "{s}/versions/{s}/{s}.jar", .{
         opts.game_dir, leaf.id, leaf.id,
     });
-    for (chain[0..chain_len]) |doc| {
+    for (chain) |doc| {
         const candidate = try std.fmt.allocPrint(arena, "{s}/versions/{s}/{s}.jar", .{
             opts.game_dir, doc.id, doc.id,
         });
@@ -168,7 +150,7 @@ pub fn launch(
     // ---- assets ---------------------------------------------------------
     const assets_dir = try std.fmt.allocPrint(arena, "{s}/assets", .{opts.game_dir});
     const asset_index = blk: {
-        for (chain[0..chain_len]) |doc| {
+        for (chain) |doc| {
             if (doc.assets) |a| break :blk a;
         }
         break :blk "legacy";
@@ -176,7 +158,7 @@ pub fn launch(
 
     // ---- logging config --------------------------------------------------
     var log_arg: ?[]const u8 = null;
-    for (chain[0..chain_len]) |doc| {
+    for (chain) |doc| {
         const logging = doc.logging orelse continue;
         const client_logging = logging.client orelse continue;
         const file_name = client_logging.file.id orelse client_logging.file.path;
@@ -226,9 +208,39 @@ pub fn launch(
 
     const java_exe = java_mod.first(arena, opts.environ, io) catch return Error.NoJava;
 
+    // Versions declare the runtime they were built against. Ancient versions
+    // (launchwrapper 1.6 and older) break on Java 9+ with a ClassCastException
+    // deep inside the loader, which is baffling without this line.
+    const wanted_java = blk: {
+        for (chain) |doc| {
+            if (doc.javaVersion) |jv| {
+                if (jv.majorVersion != 0) break :blk jv.majorVersion;
+            }
+        }
+        break :blk 0;
+    };
+    if (wanted_java != 0) {
+        if (java_mod.majorVersion(io, arena, gpa, java_exe)) |actual| {
+            if (actual < wanted_java) {
+                std.debug.print(
+                    "warning: this version wants Java {d} or newer, {s} reports Java {d}\n" ++
+                        "         set JAVA_HOME or ARCLIGHT_JAVA to a matching runtime if it fails\n",
+                    .{ wanted_java, java_exe, actual },
+                );
+            } else if (actual > wanted_java + 4) {
+                std.debug.print(
+                    "warning: this version was built for Java {d}, {s} reports Java {d}\n" ++
+                        "         old loaders (launchwrapper) cannot run on Java 9+;\n" ++
+                        "         set ARCLIGHT_JAVA to a Java {d} runtime if the launch fails\n",
+                    .{ wanted_java, java_exe, actual, wanted_java },
+                );
+            }
+        } else |_| {}
+    }
+
     try argv.append(arena, java_exe);
 
-    const jvm_args = try collectArgs(arena, chain[0..chain_len], .jvm, &vars);
+    const jvm_args = try collectArgs(arena, chain, .jvm, &vars);
     if (jvm_args.len == 0) {
         // Legacy versions carried no jvm argument list at all.
         try argv.append(arena, try std.fmt.allocPrint(arena, "-Djava.library.path={s}", .{natives_dir}));
@@ -257,7 +269,7 @@ pub fn launch(
 
     try argv.append(arena, main_class);
 
-    const game_args = try collectArgs(arena, chain[0..chain_len], .game, &vars);
+    const game_args = try collectArgs(arena, chain, .game, &vars);
     if (game_args.len == 0) {
         if (root.minecraftArguments) |legacy| {
             var it = std.mem.tokenizeScalar(u8, legacy, ' ');
@@ -293,6 +305,219 @@ pub fn launch(
             else => 1,
         },
     };
+}
+
+pub const Chain = struct {
+    /// Leaf first, root last: `docs[0].id` is the version being launched.
+    docs: []meta.VersionJson,
+
+    pub fn leaf(self: Chain) meta.VersionJson {
+        return self.docs[0];
+    }
+
+    pub fn root(self: Chain) meta.VersionJson {
+        return self.docs[self.docs.len - 1];
+    }
+};
+
+pub fn loadChain(
+    io: Io,
+    arena: std.mem.Allocator,
+    game_dir: []const u8,
+    version: []const u8,
+) !Chain {
+    var list: std.ArrayList(meta.VersionJson) = .empty;
+
+    var next: ?[]const u8 = version;
+    while (next) |id| {
+        if (list.items.len >= max_chain) break;
+        const path = try std.fmt.allocPrint(arena, "{s}/versions/{s}/{s}.json", .{ game_dir, id, id });
+        const body = Io.Dir.cwd().readFileAlloc(io, path, arena, Io.Limit.unlimited) catch |e| switch (e) {
+            error.FileNotFound => return if (list.items.len == 0) Error.VersionNotInstalled else Error.ParentNotInstalled,
+            else => return e,
+        };
+        const doc = try std.json.parseFromSliceLeaky(meta.VersionJson, arena, body, .{
+            .ignore_unknown_fields = true,
+        });
+        try list.append(arena, doc);
+        next = doc.inheritsFrom;
+    }
+    if (list.items.len == 0) return Error.VersionNotInstalled;
+    return .{ .docs = try list.toOwnedSlice(arena) };
+}
+
+// ---------------------------------------------------------------- preflight
+
+pub const Preflight = struct {
+    /// Paths that will stop the game from starting at all.
+    fatal: []const []const u8 = &.{},
+    /// The client jar we would put on the classpath, if any.
+    client_jar: ?[]const u8 = null,
+    natives_expected: bool = false,
+    natives_dir: ?[]const u8 = null,
+    asset_index: ?[]const u8 = null,
+    assets_checked: usize = 0,
+    assets_missing: usize = 0,
+    /// No `versions/<id>/<id>.json`, so nothing can be checked. Versions that
+    /// never shipped in Mojang's manifest (April Fools builds, wiki-only
+    /// snapshots) land here when the user has not dropped the files in yet.
+    no_version_json: bool = false,
+    /// The root of the inheritance chain: the id `install` understands.
+    root_id: []const u8 = "",
+
+    pub fn ok(self: Preflight) bool {
+        return self.fatal.len == 0 and self.assets_missing == 0;
+    }
+
+    /// A missing asset degrades the game but does not stop it; a missing jar or
+    /// library does. Keep the two apart so a flaky CDN cannot make the game
+    /// unlaunchable.
+    pub fn blocked(self: Preflight) bool {
+        return self.fatal.len != 0;
+    }
+};
+
+pub fn preflight(
+    io: Io,
+    arena: std.mem.Allocator,
+    game_dir: []const u8,
+    version: []const u8,
+) !Preflight {
+    var fatal: std.ArrayList([]const u8) = .empty;
+    var seen: std.StringHashMap(void) = .init(arena);
+    const add = struct {
+        fn call(
+            list: *std.ArrayList([]const u8),
+            map: *std.StringHashMap(void),
+            alloc: std.mem.Allocator,
+            path: []const u8,
+        ) !void {
+            // One library can be declared by both a loader and its parent, so
+            // the same missing path shows up more than once.
+            if ((try map.getOrPut(path)).found_existing) return;
+            try list.append(alloc, path);
+        }
+    }.call;
+
+    const chain_result = loadChain(io, arena, game_dir, version);
+    if (chain_result) |chain| {
+        var report: Preflight = .{ .root_id = chain.docs[chain.docs.len - 1].id };
+        const leaf = chain.leaf();
+
+        // client jar: the leaf's own, else the first one in the chain
+        for (chain.docs) |doc| {
+            const candidate = try std.fmt.allocPrint(arena, "{s}/versions/{s}/{s}.jar", .{
+                game_dir, doc.id, doc.id,
+            });
+            if (tryStat(io, candidate) != null) {
+                report.client_jar = candidate;
+                break;
+            }
+        }
+        if (report.client_jar == null) {
+            const expected = try std.fmt.allocPrint(arena, "{s}/versions/{s}/{s}.jar", .{
+                game_dir, leaf.id, leaf.id,
+            });
+            try add(&fatal, &seen, arena, expected);
+        }
+
+        // libraries + natives
+        var needs_natives = false;
+        for (chain.docs) |doc| {
+            for (doc.libraries orelse &.{}) |lib| {
+                if (!meta.allowed(lib.rules)) continue;
+                if (lib.natives != null) {
+                    if (lib.natives.?.map.get(meta.osName()) != null) needs_natives = true;
+                }
+                const rel: ?[]const u8 = blk: {
+                    if (lib.downloads) |dls| {
+                        // Classifier-only libraries (natives) never have a base
+                        // jar; the maven guess below would be a false positive.
+                        if (dls.artifact) |artifact| break :blk artifact.path;
+                        break :blk null;
+                    }
+                    if (try meta.mavenPath(arena, lib, null)) |m| break :blk m.rel;
+                    break :blk null;
+                };
+                const path_rel = rel orelse continue;
+                const path = try std.fs.path.join(arena, &.{ game_dir, "libraries", path_rel });
+                if (tryStat(io, path) == null) try add(&fatal, &seen, arena, path);
+            }
+        }
+
+        if (needs_natives) {
+            report.natives_expected = true;
+            const dir = try std.fmt.allocPrint(arena, "{s}/versions/{s}/natives", .{
+                game_dir, leaf.id,
+            });
+            report.natives_dir = dir;
+            if (!dirHasEntries(io, dir)) try add(&fatal, &seen, arena, dir);
+        }
+
+        // log4j config, when the version json carries one out of band
+        for (chain.docs) |doc| {
+            const logging = doc.logging orelse continue;
+            const client_logging = logging.client orelse continue;
+            const name = client_logging.file.id orelse client_logging.file.path;
+            const path = try std.fmt.allocPrint(arena, "{s}/assets/log_configs/{s}", .{ game_dir, name });
+            if (tryStat(io, path) == null) try add(&fatal, &seen, arena, path);
+            break;
+        }
+
+        // assets: an index and its objects. Not fatal, just reported.
+        const index_id = blk: {
+            for (chain.docs) |doc| {
+                if (doc.assets) |a| break :blk a;
+            }
+            break :blk "legacy";
+        };
+        const index_path = try std.fmt.allocPrint(arena, "{s}/assets/indexes/{s}.json", .{
+            game_dir, index_id,
+        });
+        report.asset_index = index_path;
+
+        if (Io.Dir.cwd().readFileAlloc(io, index_path, arena, Io.Limit.limited(32 << 20))) |body| {
+            const idx = std.json.parseFromSliceLeaky(meta.AssetIndexFile, arena, body, .{
+                .ignore_unknown_fields = true,
+            }) catch null;
+            if (idx) |parsed| {
+                var it = parsed.objects.map.iterator();
+                while (it.next()) |entry| {
+                    const obj = entry.value_ptr.*;
+                    if (obj.hash.len < 2) continue;
+                    report.assets_checked += 1;
+                    const path = try std.fmt.allocPrint(arena, "{s}/assets/objects/{s}/{s}", .{
+                        game_dir, obj.hash[0..2], obj.hash,
+                    });
+                    const st = tryStat(io, path) orelse {
+                        report.assets_missing += 1;
+                        continue;
+                    };
+                    if (obj.size != 0 and st.size != obj.size) report.assets_missing += 1;
+                }
+            }
+        } else |_| {
+            report.assets_missing = 1;
+        }
+
+        report.fatal = try fatal.toOwnedSlice(arena);
+        return report;
+    } else |err| switch (err) {
+        Error.VersionNotInstalled => return .{ .no_version_json = true },
+        else => return err,
+    }
+}
+
+fn tryStat(io: Io, path: []const u8) ?Io.File.Stat {
+    return Io.Dir.cwd().statFile(io, path, .{}) catch null;
+}
+
+fn dirHasEntries(io: Io, path: []const u8) bool {
+    var dir = Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return false;
+    defer dir.close(io);
+    var it = dir.iterate();
+    const entry = it.next(io) catch return false;
+    return entry != null;
 }
 
 const Var = struct { name: []const u8, value: []const u8 };

@@ -4,7 +4,7 @@
 const std = @import("std");
 const Io = std.Io;
 
-pub const Error = error{JavaNotFound};
+pub const Error = error{ JavaNotFound, ProbeFailed };
 
 fn isExecutableFile(io: Io, path: []const u8) bool {
     const file = Io.Dir.openFileAbsolute(io, path, .{}) catch return false;
@@ -63,6 +63,41 @@ pub fn candidates(
     }
 
     return out.toOwnedSlice(arena);
+}
+
+/// Parse `java -version` and return the major number (8, 11, 17, 21, ...).
+/// Version strings look like `openjdk version "21.0.12.1"`, `"11.0.31"`, or
+/// `"1.8.0_412"`.
+pub fn majorVersion(
+    io: Io,
+    arena: std.mem.Allocator,
+    gpa: std.mem.Allocator,
+    java_exe: []const u8,
+) !u32 {
+    const result = std.process.run(gpa, io, .{
+        .argv = &.{ java_exe, "-version" },
+        .stdout_limit = Io.Limit.limited(8192),
+        .stderr_limit = Io.Limit.limited(8192),
+    }) catch return error.ProbeFailed;
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+    _ = arena;
+
+    const text = if (result.stdout.len != 0) result.stdout else result.stderr;
+    const quote_open = std.mem.indexOfScalar(u8, text, '"') orelse return error.ProbeFailed;
+    const rest = text[quote_open + 1 ..];
+    const quote_close = std.mem.indexOfScalar(u8, rest, '"') orelse return error.ProbeFailed;
+    const version = rest[0..quote_close];
+
+    var parts = std.mem.splitAny(u8, version, "._-+");
+    const head = parts.next() orelse return error.ProbeFailed;
+    const major = std.fmt.parseInt(u32, head, 10) catch return error.ProbeFailed;
+    // 1.8.0_412 -> 8
+    if (major == 1) {
+        const second = parts.next() orelse return error.ProbeFailed;
+        return std.fmt.parseInt(u32, second, 10) catch error.ProbeFailed;
+    }
+    return major;
 }
 
 /// Best-effort first match. Never returns a JDK newer requirement than asked

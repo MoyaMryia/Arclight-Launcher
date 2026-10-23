@@ -26,6 +26,10 @@ pub const Exit = struct {
     pub const no_ownership: u8 = 12;
     pub const download: u8 = 20;
     pub const java_missing: u8 = 30;
+    /// Files the launch needs are not on disk.
+    pub const missing_files: u8 = 21;
+    /// The game ran and exited with a non-zero status.
+    pub const game_failed: u8 = 40;
 };
 
 pub const Ctx = struct {
@@ -88,7 +92,8 @@ const usage_text =
     \\     0 success      2 usage        3 config      10 auth failed
     \\    11 Client ID not authorized by Minecraft Services
     \\    12 account does not own the game
-    \\    20 download failed                       30 no Java runtime found
+    \\    20 download failed        21 required files missing
+    \\    30 no Java runtime found  40 the game exited with a non-zero status
     \\
     \\Game files are fetched only from Mojang's own endpoints
     \\(piston-meta, piston-data, libraries.minecraft.net, resources.download.minecraft.net)
@@ -634,6 +639,8 @@ const LaunchFlags = struct {
     version: []const u8 = "",
     dir: ?[]const u8 = null,
     dry_run: bool = false,
+    /// Re-download whatever preflight reports as missing before launching.
+    repair: bool = false,
 };
 
 fn parseLaunchFlags(args: []const []const u8) ?LaunchFlags {
@@ -647,6 +654,8 @@ fn parseLaunchFlags(args: []const []const u8) ?LaunchFlags {
             f.dir = args[i];
         } else if (eq(a, "--dry-run")) {
             f.dry_run = true;
+        } else if (eq(a, "--repair")) {
+            f.repair = true;
         } else if (a.len != 0 and a[0] == '-') {
             return null;
         } else if (f.version.len == 0) {
@@ -659,7 +668,7 @@ fn parseLaunchFlags(args: []const []const u8) ?LaunchFlags {
 
 fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
     const flags = parseLaunchFlags(args) orelse {
-        c.err("usage: arclight-launcher launch <version> [--dir <path>] [--dry-run]\n", .{});
+        c.err("usage: arclight-launcher launch <version> [--dir <path>] [--dry-run] [--repair]\n", .{});
         return Exit.usage;
     };
 
@@ -671,6 +680,63 @@ fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
         const home = c.environ.get("HOME") orelse return Exit.usage;
         break :blk std.fs.path.join(arena, &.{ home, ".minecraft" }) catch return Exit.config;
     };
+
+    // Preflight before any network work: fail fast, and tell the user exactly
+    // what is missing instead of letting the JVM die on it.
+    var check = launch_mod.preflight(c.io, arena, game_dir, flags.version) catch |e| {
+        c.err("error: cannot inspect {s}: {s}\n", .{ flags.version, @errorName(e) });
+        return Exit.config;
+    };
+
+    if (check.no_version_json) {
+        c.err(
+            "error: no versions/{s}/{s}.json in {s}\n" ++
+                "hint: `arclight-launcher install {s}` if it is in Mojang's manifest,\n" ++
+                "      otherwise place the version json and jar yourself\n",
+            .{ flags.version, flags.version, game_dir, flags.version },
+        );
+        return Exit.missing_files;
+    }
+
+    if (flags.repair and (check.blocked() or check.assets_missing != 0)) {
+        if (repairVersion(c, arena, game_dir, flags.version, check.root_id)) |_| {
+            check = launch_mod.preflight(c.io, arena, game_dir, flags.version) catch check;
+        } else |e| {
+            c.err("error: repair failed: {s}\n", .{@errorName(e)});
+            return Exit.download;
+        }
+    }
+
+    if (check.blocked()) {
+        c.err("preflight: {d} required file(s) missing\n", .{check.fatal.len});
+        for (check.fatal, 0..) |path, i| {
+            if (i >= 8) {
+                c.err("  ... and {d} more\n", .{check.fatal.len - i});
+                break;
+            }
+            c.err("  {s}\n", .{path});
+        }
+        if (check.natives_expected and check.natives_dir != null) {
+            c.err("hint: legacy natives are unpacked by `install`, not by hand\n", .{});
+        }
+        c.err(
+            "hint: `arclight-launcher launch {s} --repair` fetches what is missing first\n" ++
+                "      or `arclight-launcher install {s} --dir {s}`\n" ++
+                "      versions that never shipped in Mojang's manifest (April Fools\n" ++
+                "      snapshots, wiki builds) have to have their files placed by hand\n",
+            .{ flags.version, check.root_id, game_dir },
+        );
+        return Exit.missing_files;
+    }
+
+    if (check.assets_missing != 0 and !c.json) {
+        c.err(
+            "warning: {d} of {d} asset objects are missing; the game will start but\n" ++
+                "         textures, sounds or the menu panorama may be incomplete.\n" ++
+                "         `install` fills them in.\n",
+            .{ check.assets_missing, check.assets_checked },
+        );
+    }
 
     // A missing account is fatal unless we are only printing the command line.
     var account: ?store.Account = null;
@@ -722,7 +788,13 @@ fn cmdLaunch(c: Ctx, args: []const []const u8) u8 {
         }
         return Exit.ok;
     }
-    return if (outcome.exit_code == 0) Exit.ok else Exit.auth;
+    if (outcome.exit_code != 0) {
+        // The child's own status is not one of ours: passing it through would
+        // collide with codes like 11 (Client ID) or 20 (download).
+        c.err("game exited with status {d}\n", .{outcome.exit_code});
+        return Exit.game_failed;
+    }
+    return Exit.ok;
 }
 
 /// Neither arclight-launcher nor any downstream GUI ships a Client ID, so the very
@@ -764,4 +836,41 @@ fn printClientIdGuide(c: Ctx, dir: []const u8) void {
         \\whoever registered it, and it can be revoked at any time.
         \\
     , .{});
+}
+
+/// Re-install the manifest version at the root of the chain, then top up the
+/// loader's own libraries. `install` is idempotent, so this only fetches what
+/// preflight reported missing.
+fn repairVersion(
+    c: Ctx,
+    arena: std.mem.Allocator,
+    game_dir: []const u8,
+    version: []const u8,
+    root_id: []const u8,
+) !void {
+    const config = try store.configDir(arena, c.environ);
+    const cache_dir = try std.fs.path.join(arena, &.{ config, "cache" });
+
+    _ = install_mod.install(c.io, c.gpa, arena, .{
+        .game_dir = game_dir,
+        .cache_dir = cache_dir,
+        .version = root_id,
+        .want_assets = true,
+        .progress = install_mod.stderrIsTty(c.io),
+    }) catch |e| return e;
+
+    // Anything above the root is a loader; its libraries are already resolved
+    // in its own version json, so the same downloader covers them.
+    const chain = try launch_mod.loadChain(c.io, arena, game_dir, version);
+    if (chain.docs.len > 1) {
+        const leaf = chain.leaf();
+        const version_dir = try std.fs.path.join(arena, &.{ game_dir, "versions", leaf.id });
+        var stats: install_mod.Stats = .{ .version = leaf.id };
+        try install_mod.installLibraries(c.io, c.gpa, arena, .{
+            .game_dir = game_dir,
+            .cache_dir = cache_dir,
+            .version = leaf.id,
+            .progress = install_mod.stderrIsTty(c.io),
+        }, leaf, version_dir, &stats);
+    }
 }

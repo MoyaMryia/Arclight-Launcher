@@ -79,7 +79,7 @@ pub fn getShared(client: *http.Client, io: Io, gpa: std.mem.Allocator, spec: Spe
 
     var attempt: u8 = 0;
     while (attempt < max_attempts) : (attempt += 1) {
-        const result = downloadOnce(client, io, gpa, spec, attempt) catch |err| {
+        const result = downloadOnce(client, io, gpa, spec) catch |err| {
             if (attempt + 1 == max_attempts) return err;
             // Mojang's CDN answers a burst with a bare 400/429 and an empty or
             // HTML body, so back off far enough for the throttle window to pass.
@@ -92,7 +92,7 @@ pub fn getShared(client: *http.Client, io: Io, gpa: std.mem.Allocator, spec: Spe
     unreachable;
 }
 
-fn downloadOnce(client: *http.Client, io: Io, gpa: std.mem.Allocator, spec: Spec, attempt: u8) !Outcome {
+fn downloadOnce(client: *http.Client, io: Io, gpa: std.mem.Allocator, spec: Spec) !Outcome {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -108,10 +108,11 @@ fn downloadOnce(client: *http.Client, io: Io, gpa: std.mem.Allocator, spec: Spec
     const res = try client.fetch(.{
         .location = .{ .url = spec.url },
         .response_writer = &fw.interface,
-        // A retry gets a fresh connection: a half-consumed response can
-        // otherwise leave the pooled connection in a state servers answer
-        // with a bare 400.
-        .keep_alive = attempt == 0,
+        // One connection per request. The pool was handing back connections
+        // that Mojang's CDN answered with a bare 400 and an empty body, which
+        // looked exactly like a real failure and cost more to diagnose than the
+        // extra TLS handshake costs to avoid.
+        .keep_alive = false,
         .extra_headers = &.{
             .{ .name = "user-agent", .value = user_agent },
             .{ .name = "accept", .value = "*/*" },
